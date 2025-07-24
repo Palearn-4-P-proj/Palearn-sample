@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Palearn - AI 스터디 트레이너</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <!-- 로그인 화면 -->
+    <div id="login-screen" class="screen active">
+        <div class="container">
+            <div class="logo-header">
+                <h1>🎓 Palearn</h1>
+                <p>당신만의 AI 스터디 트레이너</p>
+            </div>
+            
+            <div class="auth-container">
+                <div class="auth-tabs">
+                    <button class="tab-button active" onclick="showTab('login')">로그인</button>
+                    <button class="tab-button" onclick="showTab('register')">회원가입</button>
+                </div>
+                
+                <!-- 로그인 폼 -->
+                <div id="login-form" class="auth-form active">
+                    <div class="form-group">
+                        <label>사용자명</label>
+                        <input type="text" id="login-username" placeholder="사용자명을 입력하세요">
+                    </div>
+                    <div class="form-group">
+                        <label>비밀번호</label>
+                        <input type="password" id="login-password" placeholder="비밀번호를 입력하세요">
+                    </div>
+                    <button class="btn-primary" onclick="login()">로그인</button>
+                </div>
+                
+                <!-- 회원가입 폼 -->
+                <div id="register-form" class="auth-form">
+                    <div class="form-group">
+                        <label>이름</label>
+                        <input type="text" id="register-name" placeholder="이름을 입력하세요">
+                    </div>
+                    <div class="form-group">
+                        <label>사용자명</label>
+                        <input type="text" id="register-username" placeholder="사용자명을 입력하세요">
+                    </div>
+                    <div class="form-group">
+                        <label>비밀번호</label>
+                        <input type="password" id="register-password" placeholder="비밀번호를 입력하세요">
+                    </div>
+                    <div class="form-group">
+                        <label>생년월일</label>
+                        <input type="date" id="register-birthday">
+                    </div>
+                    <button class="btn-primary" onclick="register()">회원가입</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 홈 화면 -->
+    <div id="home-screen" class="screen">
+        <div class="container">
+            <div class="header">
+                <div class="header-left">
+                    <h2>📚 내 학습 계획</h2>
+                    <p id="welcome-message">안녕하세요!</p>
+                </div>
+                <div class="header-right">
+                    <button class="btn-secondary" onclick="showMyPage()">마이페이지</button>
+                    <button class="btn-secondary" onclick="logout()">로그아웃</button>
+                </div>
+            </div>
+            
+            <div id="plans-container" class="plans-container">
+                <!-- 계획들이 여기에 동적으로 추가됩니다 -->
+            </div>
+            
+            <div class="floating-button">
+                <button class="btn-floating" onclick="showCreatePlan()">+ 새 계획 만들기</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 마이페이지 -->
+    <div id="mypage-screen" class="screen">
+        <div class="container">
+            <div class="header">
+                <div class="header-left">
+                    <button class="btn-back" onclick="showHome()">← 뒤로가기</button>
+                    <h2>👤 마이페이지</h2>
+                </div>
+            </div>
+            
+            <div class="mypage-content">
+                <div class="user-info-card">
+                    <h3>사용자 정보</h3>
+                    <div class="info-item">
+                        <span class="label">이름:</span>
+                        <span id="user-name">-</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="label">생년월일:</span>
+                        <span id="user-birthday">-</span>
+                    </div>
+                </div>
+                
+                <div class="plans-summary-card">
+                    <h3>내 학습 계획</h3>
+                    <div id="user-plans-summary">
+                        <!-- 계획 요약 정보가 여기에 표시됩니다 -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 계획 생성 화면 -->
+    <div id="create-plan-screen" class="screen">
+        <div class="container">
+            <div class="header">
+                <div class="header-left">
+                    <button class="btn-back" onclick="showHome()">← 뒤로가기</button>
+                    <h2>📝 새 계획 만들기</h2>
+                </div>
+            </div>
+            
+            <div class="create-plan-content">
+                <div class="step-indicator">
+                    <div class="step active">1. 기본 정보</div>
+                    <div class="step">2. 수준 측정</div>
+                    <div class="step">3. 강좌 선택</div>
+                    <div class="step">4. 계획 확인</div>
+                </div>
+                
+                <!-- Step 1: 기본 정보 입력 -->
+                <div id="step1" class="step-content active">
+                    <div class="form-group">
+                        <label>배우고 싶은 스킬</label>
+                        <input type="text" id="skill-name" placeholder="예: JavaScript, Python, 영어 등">
+                    </div>
+                    <div class="form-group">
+                        <label>하루 공부 가능 시간 (최소 1시간)</label>
+                        <input type="number" id="daily-hours" min="1" max="12" value="2">
+                    </div>
+                    <div class="form-group">
+                        <label>공부를 안하는 요일</label>
+                        <div class="checkbox-group">
+                            <label><input type="checkbox" value="sunday"> 일요일</label>
+                            <label><input type="checkbox" value="monday"> 월요일</label>
+                            <label><input type="checkbox" value="tuesday"> 화요일</label>
+                            <label><input type="checkbox" value="wednesday"> 수요일</label>
+                            <label><input type="checkbox" value="thursday"> 목요일</label>
+                            <label><input type="checkbox" value="friday"> 금요일</label>
+                            <label><input type="checkbox" value="saturday"> 토요일</label>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>시작 날짜</label>
+                        <input type="date" id="start-date">
+                    </div>
+                    <div class="form-group">
+                        <label>현재 수준</label>
+                        <select id="knowledge-level">
+                            <option value="beginner">초급 - 전혀 모름</option>
+                            <option value="elementary">초급+ - 기초적인 개념 알고 있음</option>
+                            <option value="intermediate">중급 - 어느 정도 경험 있음</option>
+                            <option value="advanced">고급 - 상당한 경험 있음</option>
+                        </select>
+                    </div>
+                    <button class="btn-primary" onclick="nextStep(2)">다음 단계</button>
+                </div>
+                
+                <!-- Step 2: 수준 측정 퀴즈 -->
+                <div id="step2" class="step-content">
+                    <div class="quiz-container">
+                        <h3>수준 측정 퀴즈</h3>
+                        <p>당신의 실력을 정확히 파악하기 위한 O/X 퀴즈입니다.</p>
+                        <div id="quiz-questions">
+                            <!-- 퀴즈 문제들이 여기에 동적으로 추가됩니다 -->
+                        </div>
+                        <div class="quiz-navigation" style="display: none;">
+                            <button class="btn-secondary" onclick="prevStep(1)">이전</button>
+                            <button class="btn-primary" onclick="submitQuiz()">퀴즈 완료</button>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Step 3: 강좌 선택 -->
+                <div id="step3" class="step-content">
+                    <div class="course-selection">
+                        <h3>추천 강좌</h3>
+                        <p>당신의 수준에 맞는 강좌를 추천드립니다.</p>
+                        <div id="recommended-courses">
+                            <!-- 추천 강좌들이 여기에 동적으로 추가됩니다 -->
+                        </div>
+                        <div class="step-navigation">
+                            <button class="btn-secondary" onclick="prevStep(2)">이전</button>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Step 4: 계획 확인 -->
+                <div id="step4" class="step-content">
+                    <div class="plan-preview">
+                        <h3>학습 계획 미리보기</h3>
+                        <div id="calendar-container">
+                            <!-- 캘린더가 여기에 표시됩니다 -->
+                        </div>
+                        <div class="step-navigation">
+                            <button class="btn-secondary" onclick="prevStep(3)">이전</button>
+                            <button class="btn-primary" onclick="confirmPlan()">계획 확정</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 계획 상세 화면 -->
+    <div id="plan-detail-screen" class="screen">
+        <div class="container">
+            <div class="header">
+                <div class="header-left">
+                    <button class="btn-back" onclick="showHome()">← 뒤로가기</button>
+                    <h2 id="plan-title">계획 상세</h2>
+                </div>
+            </div>
+            
+            <!-- 복습 자료 섹션 -->
+            <div id="review-section" class="review-section" style="display: none;">
+                <h3>📖 어제 학습 내용 복습</h3>
+                <div id="review-materials">
+                    <!-- 복습 자료들이 여기에 표시됩니다 -->
+                </div>
+                <button class="btn-primary" onclick="startTodayStudy()">오늘 학습 시작하기</button>
+            </div>
+            
+            <!-- 오늘의 학습 섹션 -->
+            <div id="today-study-section" class="today-study-section">
+                <div class="progress-header">
+                    <h3>📚 오늘의 학습</h3>
+                    <div class="progress-bar-container">
+                        <div class="progress-bar">
+                            <div id="progress-fill" class="progress-fill" style="width: 0%"></div>
+                        </div>
+                        <span id="progress-text">0%</span>
+                    </div>
+                </div>
+                
+                <div id="today-tasks">
+                    <!-- 오늘 할 일들이 여기에 표시됩니다 -->
+                </div>
+                
+                <div id="completion-celebration" class="completion-celebration" style="display: none;">
+                    <div class="celebration-content">
+                        <h2>🎉 오늘 학습 완료!</h2>
+                        <div class="flower">🌸</div>
+                        <p>훌륭합니다! 오늘도 한 걸음 더 나아갔네요!</p>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 캘린더 섹션 -->
+            <div class="calendar-section">
+                <h3>📅 학습 캘린더</h3>
+                <div id="study-calendar">
+                    <!-- 캘린더가 여기에 표시됩니다 -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 다음 스킬 추천 화면 -->
+    <div id="next-skill-screen" class="screen">
+        <div class="container">
+            <div class="header">
+                <div class="header-left">
+                    <h2>🏆 계획 완료! 다음 스킬 추천</h2>
+                </div>
+            </div>
+            
+            <div class="completion-certificate">
+                <div class="certificate">
+                    <h2>🏆 수료증</h2>
+                    <p id="completed-skill-name">스킬명</p>
+                    <p>완주하신 것을 축하드립니다!</p>
+                    <div class="certificate-date" id="completion-date"></div>
+                </div>
+            </div>
+            
+            <div class="next-recommendations">
+                <h3>다음에 도전해볼 스킬</h3>
+                <div id="next-skill-options">
+                    <!-- 추천 스킬들이 여기에 표시됩니다 -->
+                </div>
+                <div class="recommendation-actions">
+                    <button class="btn-secondary" onclick="skipRecommendation()">건너뛰기</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 알림 토스트 -->
+    <div id="toast" class="toast">
+        <span id="toast-message"></span>
+    </div>
+
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
