@@ -1,838 +1,896 @@
-// 전역 변수
 let currentUser = null;
-let currentQuiz = null;
+let currentQuizzes = [];
 let currentQuizIndex = 0;
-let quizAnswers = [];
+let userAnswers = [];
 let selectedCourse = null;
 let currentPlan = null;
-let currentPlanId = null;
+let currentDate = new Date();
+let currentMonth = new Date();
+let devCurrentDate = new Date();
+let isPlanConfirmed = false;
+let pendingDateChange = null;
 
-// 페이지 로드 시 초기화
 document.addEventListener('DOMContentLoaded', function() {
-    // 바로 로그인 화면 표시
-    showScreen('login-screen');
-    
-    // 오늘 날짜를 시작 날짜 기본값으로 설정
-    const today = new Date().toISOString().split('T')[0];
-    const startDateInput = document.getElementById('start-date');
-    if (startDateInput) {
-        startDateInput.value = today;
-    }
+    console.log('Palearn 초기화 완료');
+    updateTodayDate();
+    renderCalendar();
+    initDevControls();
 });
 
-// 화면 전환 함수
-function showScreen(screenId) {
-    const screens = document.querySelectorAll('.screen');
-    screens.forEach(screen => screen.classList.remove('active'));
-    
-    const targetScreen = document.getElementById(screenId);
-    if (targetScreen) {
-        targetScreen.classList.add('active');
+async function apiCall(endpoint, data = null, method = 'GET') {
+    showLoading();
+    try {
+        const options = {
+            method: method,
+            headers: {
+                'Content-Type': 'application/json',
+            }
+        };
+        
+        if (data && (method === 'POST' || method === 'PUT')) {
+            options.body = JSON.stringify(data);
+        }
+        
+        const response = await fetch(`/api${endpoint}`, options);
+        const result = await response.json();
+        
+        console.log(`API Call [${method} ${endpoint}]:`, result);
+        return result;
+        
+    } catch (error) {
+        console.error(`API Error [${endpoint}]:`, error);
+        alert('서버와의 통신 중 오류가 발생했습니다.');
+        return null;
+    } finally {
+        hideLoading();
     }
 }
 
-// 토스트 메시지 표시
-function showToast(message, duration = 3000) {
-    const toast = document.getElementById('toast');
-    const toastMessage = document.getElementById('toast-message');
-    
-    toastMessage.textContent = message;
-    toast.classList.add('show');
-    
-    setTimeout(() => {
-        toast.classList.remove('show');
-    }, duration);
+function showLoading() {
+    document.getElementById('loadingOverlay').style.display = 'block';
 }
 
-// 탭 전환 (로그인/회원가입)
-function showTab(tabName) {
-    const tabs = document.querySelectorAll('.tab-button');
-    const forms = document.querySelectorAll('.auth-form');
-    
-    tabs.forEach(tab => tab.classList.remove('active'));
-    forms.forEach(form => form.classList.remove('active'));
-    
-    document.querySelector(`.tab-button:nth-child(${tabName === 'login' ? '1' : '2'})`).classList.add('active');
-    document.getElementById(`${tabName}-form`).classList.add('active');
+function hideLoading() {
+    document.getElementById('loadingOverlay').style.display = 'none';
 }
 
-// 회원가입
+function showSection(sectionId) {
+    document.querySelectorAll('.section').forEach(section => {
+        section.classList.remove('active');
+    });
+    document.getElementById(sectionId).classList.add('active');
+}
+
+function switchTab(tab) {
+    document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+    document.querySelectorAll('.auth-form').forEach(form => form.classList.remove('active'));
+    
+    if (tab === 'login') {
+        document.querySelector('.tab-btn').classList.add('active');
+        document.getElementById('loginForm').classList.add('active');
+    } else {
+        document.querySelectorAll('.tab-btn')[1].classList.add('active');
+        document.getElementById('registerForm').classList.add('active');
+    }
+}
+
 async function register() {
-    const name = document.getElementById('register-name').value;
-    const username = document.getElementById('register-username').value;
-    const password = document.getElementById('register-password').value;
-    const birthday = document.getElementById('register-birthday').value;
+    const username = document.getElementById('regUsername').value;
+    const password = document.getElementById('regPassword').value;
+    const name = document.getElementById('regName').value;
+    const birthday = document.getElementById('regBirthday').value;
     
-    if (!name || !username || !password || !birthday) {
-        showToast('모든 필드를 입력해주세요.');
+    if (!username || !password || !name || !birthday) {
+        alert('모든 필드를 입력해주세요.');
         return;
     }
     
-    try {
-        const response = await fetch('/api/register', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                name: name,
-                username: username,
-                password: password,
-                birthday: birthday
-            })
-        });
-        
-        const result = await response.json();
-        
-        if (result.success) {
-            showToast('회원가입이 완료되었습니다!');
-            await loadUserInfo();
-            showHome();
-        } else {
-            showToast(result.message);
-        }
-    } catch (error) {
-        console.error('Registration error:', error);
-        showToast('회원가입 중 오류가 발생했습니다.');
+    const result = await apiCall('/register', {
+        username, password, name, birthday
+    }, 'POST');
+    
+    if (result && result.success) {
+        alert('회원가입이 완료되었습니다. 로그인해주세요.');
+        switchTab('login');
+    } else {
+        alert('이미 존재하는 사용자명입니다.');
     }
 }
 
-// 로그인
 async function login() {
-    const username = document.getElementById('login-username').value;
-    const password = document.getElementById('login-password').value;
+    const username = document.getElementById('loginUsername').value;
+    const password = document.getElementById('loginPassword').value;
     
     if (!username || !password) {
-        showToast('사용자명과 비밀번호를 입력해주세요.');
+        alert('사용자명과 비밀번호를 입력해주세요.');
         return;
     }
     
-    try {
-        const response = await fetch('/api/login', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                username: username,
-                password: password
-            })
-        });
+    const result = await apiCall('/login', {
+        username, password
+    }, 'POST');
+    
+    if (result && result.success) {
+        currentUser = result.user;
+        document.getElementById('userName').textContent = currentUser.name;
+        document.getElementById('homeUserName').textContent = currentUser.name;
+        document.getElementById('userInfo').style.display = 'block';
         
-        const result = await response.json();
-        
-        if (result.success) {
-            showToast('로그인 성공!');
-            await loadUserInfo();
-            showHome();
-        } else {
-            showToast(result.message);
-        }
-    } catch (error) {
-        console.error('Login error:', error);
-        showToast('로그인 중 오류가 발생했습니다.');
+        showHome();
+        loadUserPlans();
+    } else {
+        alert('로그인 정보가 올바르지 않습니다.');
     }
 }
 
-// 로그아웃
-async function logout() {
-    try {
-        await fetch('/api/logout', { method: 'POST' });
-        currentUser = null;
-        showScreen('login-screen');
-        showToast('로그아웃되었습니다.');
-    } catch (error) {
-        console.error('Logout error:', error);
-    }
+function logout() {
+    currentUser = null;
+    currentPlan = null;
+    isPlanConfirmed = false;
+    pendingDateChange = null;
+    document.getElementById('userInfo').style.display = 'none';
+    showSection('loginSection');
 }
 
-// 사용자 정보 로드
-async function loadUserInfo() {
-    try {
-        const response = await fetch('/api/user-info');
-        const result = await response.json();
-        
-        if (result.success) {
-            currentUser = result.user;
-            displayUserPlans(result.plans);
-        }
-    } catch (error) {
-        console.error('Load user info error:', error);
-    }
-}
-
-// 홈 화면 표시
 function showHome() {
-    showScreen('home-screen');
-    if (currentUser) {
-        document.getElementById('welcome-message').textContent = 
-            `안녕하세요, ${currentUser.name}님! 오늘도 열심히 공부해봐요 🚀`;
-    }
-    loadUserInfo();
+    currentPlan = null;
+    isPlanConfirmed = false;
+    showSection('homeSection');
+    loadUserPlans();
 }
 
-// 사용자 계획 표시
-function displayUserPlans(plans) {
-    const container = document.getElementById('plans-container');
+function loadUserPlans() {
+    const plansList = document.getElementById('plansList');
     
-    if (!plans || plans.length === 0) {
-        container.innerHTML = `
-            <div class="empty-state">
-                <h3>📚 아직 학습 계획이 없어요</h3>
-                <p>새로운 스킬을 배워보세요!</p>
-                <button class="btn-primary" onclick="showCreatePlan()">첫 계획 만들기</button>
-            </div>
-        `;
+    if (!currentUser || !currentUser.plans || currentUser.plans.length === 0) {
+        plansList.innerHTML = '<p>아직 학습 계획이 없습니다. 새로운 계획을 만들어보세요!</p>';
         return;
     }
     
-    container.innerHTML = plans.map(plan => {
+    plansList.innerHTML = '';
+    currentUser.plans.forEach((plan, index) => {
         const progress = calculatePlanProgress(plan);
-        const statusClass = plan.status === 'completed' ? 'completed' : 
-                          plan.status === 'overdue' ? 'overdue' : 'active';
+        const planItem = document.createElement('div');
+        planItem.className = 'plan-item';
         
-        return `
-            <div class="plan-card" onclick="openPlan('${plan.id}')">
-                <h3>${plan.skill}</h3>
-                <p>${plan.course_info?.description || '학습 계획'}</p>
+        planItem.innerHTML = `
+            <div class="plan-content" onclick="openPlan(${index})">
+                <h4>${plan.plan_name}</h4>
+                <p>총 기간: ${plan.total_duration}</p>
                 <div class="plan-progress">
-                    <div class="plan-progress-fill" style="width: ${progress}%"></div>
+                    <div class="progress-bar" style="width: ${progress}%"></div>
                 </div>
-                <p class="plan-status ${statusClass}">${progress}% 완료 • ${statusClass === 'active' ? '진행중' : statusClass === 'completed' ? '완료' : '지연'}</p>
+                <p>진행률: ${progress}%</p>
+            </div>
+            <div class="plan-actions">
+                <button onclick="editPlanName(${index})" class="btn-edit">이름 수정</button>
+                <button onclick="deletePlan(${index})" class="btn-delete">삭제</button>
             </div>
         `;
-    }).join('');
-}
-
-// 계획 진행률 계산
-function calculatePlanProgress(plan) {
-    // 실제 구현에서는 일일 진행상황을 기반으로 계산
-    return Math.floor(Math.random() * 100); // 임시 값
-}
-
-// 마이페이지 표시
-function showMyPage() {
-    showScreen('mypage-screen');
-    
-    if (currentUser) {
-        document.getElementById('user-name').textContent = currentUser.name;
-        document.getElementById('user-birthday').textContent = currentUser.birthday;
         
-        // 계획 요약 표시
-        loadUserInfo().then(() => {
-            // 추가 마이페이지 로직
-        });
-    }
+        plansList.appendChild(planItem);
+    });
 }
 
-// 계획 생성 화면 표시
-function showCreatePlan() {
-    showScreen('create-plan-screen');
-    showStep(1);
-}
-
-// 스텝 표시
-function showStep(stepNumber) {
-    // 스텝 인디케이터 업데이트
-    const steps = document.querySelectorAll('.step');
-    steps.forEach((step, index) => {
-        if (index + 1 <= stepNumber) {
-            step.classList.add('active');
-        } else {
-            step.classList.remove('active');
-        }
+function calculatePlanProgress(plan) {
+    if (!plan.daily_schedule || plan.daily_schedule.length === 0) return 0;
+    
+    let totalTasks = 0;
+    let completedTasks = 0;
+    
+    plan.daily_schedule.forEach(day => {
+        totalTasks += day.tasks.length;
+        completedTasks += day.tasks.filter(task => task.completed).length;
     });
     
-    // 스텝 콘텐츠 표시
-    const stepContents = document.querySelectorAll('.step-content');
-    stepContents.forEach((content, index) => {
-        if (index + 1 === stepNumber) {
-            content.classList.add('active');
-        } else {
-            content.classList.remove('active');
-        }
-    });
+    return totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
 }
 
-// 다음 스텝
-async function nextStep(stepNumber) {
-    if (stepNumber === 2) {
-        // 퀴즈 생성
-        await generateQuiz();
+function openPlan(planIndex) {
+    currentPlan = currentUser.plans[planIndex];
+    isPlanConfirmed = true;
+    
+    showSection('calendarSection');
+    
+    const confirmBtn = document.getElementById('confirmPlanBtn');
+    if (confirmBtn) {
+        confirmBtn.style.display = 'none';
     }
-    showStep(stepNumber);
+    
+    renderCalendar();
+    loadTodayTasks();
+    loadReviewMaterials();
 }
 
-// 이전 스텝
-function prevStep(stepNumber) {
-    showStep(stepNumber);
+function editPlanName(planIndex) {
+    const newName = prompt('새로운 계획명을 입력하세요:', currentUser.plans[planIndex].plan_name);
+    if (newName && newName.trim()) {
+        currentUser.plans[planIndex].plan_name = newName.trim();
+        loadUserPlans();
+    }
 }
 
-// 퀴즈 생성
-async function generateQuiz() {
-    const skill = document.getElementById('skill-name').value;
-    const knowledgeLevel = document.getElementById('knowledge-level').value;
+function deletePlan(planIndex) {
+    if (confirm('정말로 이 계획을 삭제하시겠습니까?')) {
+        currentUser.plans.splice(planIndex, 1);
+        
+        if (currentUser.current_plan === planIndex) {
+            currentUser.current_plan = null;
+            currentPlan = null;
+            isPlanConfirmed = false;
+        } else if (currentUser.current_plan > planIndex) {
+            currentUser.current_plan--;
+        }
+        
+        loadUserPlans();
+    }
+}
+
+function showCreatePlan() {
+    showSection('createPlanSection');
+    
+    const today = new Date().toISOString().split('T')[0];
+    document.getElementById('startDate').value = today;
+}
+
+async function startQuiz() {
+    const skill = document.getElementById('skillInput').value;
+    const selfLevel = document.getElementById('selfLevel').value;
     
     if (!skill) {
-        showToast('스킬명을 입력해주세요.');
+        alert('배우고 싶은 스킬을 입력해주세요.');
         return;
     }
     
-    try {
-        showToast('퀴즈를 생성하고 있습니다...', 5000);
+    const result = await apiCall('/generate_quiz', {
+        skill, level: selfLevel
+    }, 'POST');
+    
+    if (result && result.quizzes) {
+        currentQuizzes = result.quizzes;
+        currentQuizIndex = 0;
+        userAnswers = new Array(currentQuizzes.length);
         
-        const response = await fetch('/api/generate-quiz', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                skill: skill,
-                knowledge_level: knowledgeLevel
-            })
-        });
-        
-        const result = await response.json();
-        
-        if (result.success) {
-            currentQuiz = result.quiz;
-            displayQuiz();
-        } else {
-            showToast(result.message);
-        }
-    } catch (error) {
-        console.error('Quiz generation error:', error);
-        showToast('퀴즈 생성 중 오류가 발생했습니다.');
+        showSection('quizSection');
+        displayCurrentQuestion();
+    } else {
+        alert('퀴즈 생성 중 오류가 발생했습니다.');
     }
 }
 
-// 퀴즈 표시
-function displayQuiz() {
-    const container = document.getElementById('quiz-questions');
-    
-    if (!currentQuiz || !currentQuiz.questions) {
-        container.innerHTML = '<p>퀴즈를 불러올 수 없습니다.</p>';
+function displayCurrentQuestion() {
+    if (currentQuizIndex >= currentQuizzes.length) {
+        submitQuizAnswers();
         return;
     }
     
-    container.innerHTML = currentQuiz.questions.map((q, index) => `
-        <div class="quiz-question ${index === 0 ? 'active' : ''}" data-question-id="${index}">
-            <div class="quiz-progress">문제 ${index + 1} / ${currentQuiz.questions.length}</div>
-            <h4>${q.question}</h4>
-            <div class="quiz-options">
-                <button class="quiz-option" onclick="selectQuizAnswer(${index}, true)">O (맞음)</button>
-                <button class="quiz-option" onclick="selectQuizAnswer(${index}, false)">X (틀림)</button>
-            </div>
-        </div>
-    `).join('');
+    const question = currentQuizzes[currentQuizIndex];
+    document.getElementById('currentQuestion').textContent = question.question;
+    document.getElementById('quizProgress').textContent = `${currentQuizIndex + 1}/${currentQuizzes.length}`;
     
-    // 퀴즈 네비게이션 표시
-    document.querySelector('.quiz-navigation').style.display = 'flex';
-    
-    currentQuizIndex = 0;
-    quizAnswers = [];
-}
-
-// 퀴즈 답변 선택
-function selectQuizAnswer(questionIndex, answer) {
-    const questionDiv = document.querySelector(`[data-question-id="${questionIndex}"]`);
-    const options = questionDiv.querySelectorAll('.quiz-option');
-    
-    // 기존 선택 제거
-    options.forEach(option => option.classList.remove('selected'));
-    
-    // 새 선택 표시
-    const selectedOption = answer ? options[0] : options[1];
-    selectedOption.classList.add('selected');
-    
-    // 답변 저장
-    quizAnswers[questionIndex] = answer;
-    
-    // 자동으로 다음 문제로 이동 (1초 후)
-    setTimeout(() => {
-        if (questionIndex < currentQuiz.questions.length - 1) {
-            showQuizQuestion(questionIndex + 1);
-        }
-    }, 1000);
-}
-
-// 퀴즈 문제 표시
-function showQuizQuestion(index) {
-    const questions = document.querySelectorAll('.quiz-question');
-    questions.forEach((q, i) => {
-        if (i === index) {
-            q.classList.add('active');
-        } else {
-            q.classList.remove('active');
-        }
-    });
-    currentQuizIndex = index;
-}
-
-// 퀴즈 제출
-async function submitQuiz() {
-    if (quizAnswers.length !== currentQuiz.questions.length) {
-        showToast('모든 문제에 답해주세요.');
-        return;
-    }
-    
-    // 정답 개수 계산
-    let correctCount = 0;
-    currentQuiz.questions.forEach((q, index) => {
-        if (quizAnswers[index] === q.answer) {
-            correctCount++;
-        }
+    document.querySelectorAll('.quiz-btn').forEach(btn => {
+        btn.classList.remove('selected');
     });
     
-    try {
-        showToast('결과를 분석하고 강좌를 추천하고 있습니다...', 10000);
-        
-        const response = await fetch('/api/analyze-quiz-result', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                skill: document.getElementById('skill-name').value,
-                answers: quizAnswers,
-                correct_count: correctCount
-            })
-        });
-        
-        const result = await response.json();
-        
-        if (result.success) {
-            displayCourseRecommendations(result.analysis);
-            nextStep(3);
-        } else {
-            showToast(result.message);
+    if (userAnswers[currentQuizIndex] !== undefined) {
+        const selectedValue = userAnswers[currentQuizIndex];
+        const selectedBtn = Array.from(document.querySelectorAll('.quiz-btn'))
+            .find(btn => btn.onclick.toString().includes(selectedValue.toString()));
+        if (selectedBtn) {
+            selectedBtn.classList.add('selected');
         }
-    } catch (error) {
-        console.error('Quiz analysis error:', error);
-        showToast('분석 중 오류가 발생했습니다.');
+        document.getElementById('nextQuizBtn').disabled = false;
+    } else {
+        document.getElementById('nextQuizBtn').disabled = true;
+    }
+    
+    document.getElementById('prevQuizBtn').disabled = currentQuizIndex === 0;
+    document.getElementById('nextQuizBtn').textContent = 
+        currentQuizIndex === currentQuizzes.length - 1 ? '결과 보기' : '다음 질문';
+}
+
+function selectAnswer(answer) {
+    userAnswers[currentQuizIndex] = answer;
+    
+    document.querySelectorAll('.quiz-btn').forEach(btn => {
+        btn.classList.remove('selected');
+    });
+    
+    const selectedBtn = Array.from(document.querySelectorAll('.quiz-btn'))
+        .find(btn => btn.onclick.toString().includes(answer.toString()));
+    if (selectedBtn) {
+        selectedBtn.classList.add('selected');
+    }
+    
+    document.getElementById('nextQuizBtn').disabled = false;
+}
+
+function nextQuestion() {
+    if (currentQuizIndex < currentQuizzes.length - 1) {
+        currentQuizIndex++;
+        displayCurrentQuestion();
+    } else {
+        submitQuizAnswers();
     }
 }
 
-// 강좌 추천 표시
-function displayCourseRecommendations(analysis) {
-    const container = document.getElementById('recommended-courses');
-    
-    if (!analysis.recommendations) {
-        container.innerHTML = '<p>추천 강좌를 불러올 수 없습니다.</p>';
-        return;
+function prevQuestion() {
+    if (currentQuizIndex > 0) {
+        currentQuizIndex--;
+        displayCurrentQuestion();
+    }
+}
+
+async function submitQuizAnswers() {
+    for (let i = 0; i < currentQuizzes.length; i++) {
+        if (userAnswers[i] === undefined) {
+            alert(`${i + 1}번 문제에 답하지 않았습니다. 모든 문제에 답해주세요.`);
+            currentQuizIndex = i;
+            displayCurrentQuestion();
+            return;
+        }
     }
     
-    container.innerHTML = `
-        <div class="analysis-result">
-            <p><strong>수준 분석:</strong> ${analysis.level_analysis}</p>
-        </div>
-        ${analysis.recommendations.map((course, index) => `
-            <div class="course-card" onclick="selectCourse(${index})" data-course-index="${index}">
-                <h4>${course.title}</h4>
-                <p>${course.description}</p>
-                <div class="course-meta">
-                    <span class="course-difficulty">${course.difficulty}</span>
-                    <span class="course-duration">${course.duration}</span>
-                </div>
-                ${course.url ? `<p><a href="${course.url}" target="_blank">강좌 링크 보기</a></p>` : ''}
+    const result = await apiCall('/submit_answers', {
+        answers: userAnswers,
+        correct_answers: currentQuizzes
+    }, 'POST');
+    
+    if (result) {
+        displayQuizResults(result);
+        showSection('quizResultSection');
+    }
+}
+
+function displayQuizResults(result) {
+    document.getElementById('scorePercentage').textContent = `${Math.round(result.percentage)}%`;
+    document.getElementById('scoreText').textContent = `${result.score}/${result.total}`;
+    document.getElementById('assessedLevel').textContent = result.assessed_level;
+    
+    const resultTable = document.getElementById('resultTable');
+    resultTable.innerHTML = '';
+    
+    result.results.forEach(item => {
+        const row = document.createElement('div');
+        row.className = 'result-row';
+        row.innerHTML = `
+            <span>문제 ${item.question_num}</span>
+            <span class="result-status ${item.is_correct ? 'correct' : 'incorrect'}">
+                ${item.is_correct ? '정답' : '오답'}
+            </span>
+        `;
+        resultTable.appendChild(row);
+    });
+}
+
+function showQuizResult() {
+    showSection('quizResultSection');
+}
+
+async function showRecommendations() {
+    const skill = document.getElementById('skillInput').value;
+    const assessedLevel = document.getElementById('assessedLevel').textContent;
+    
+    const result = await apiCall('/recommend_courses', {
+        skill, assessed_level: assessedLevel
+    }, 'POST');
+    
+    if (result && result.recommendations) {
+        displayRecommendations(result.recommendations);
+        showSection('recommendationSection');
+    }
+}
+
+function displayRecommendations(recommendations) {
+    const courseList = document.getElementById('courseList');
+    courseList.innerHTML = '';
+    
+    recommendations.forEach((course, index) => {
+        const courseItem = document.createElement('div');
+        courseItem.className = 'course-item';
+        courseItem.onclick = () => selectCourse(course, courseItem);
+        
+        courseItem.innerHTML = `
+            <img src="${course.image_url}" alt="${course.title}" onerror="this.src='https://via.placeholder.com/300x200'">
+            <h4>${course.title}</h4>
+            <div class="course-meta">
+                <span>${course.type}</span>
+                <span>${course.platform || '온라인'}</span>
+                <span>${course.chapters}챕터</span>
+                <span>${course.duration}</span>
+                <span>${course.price || '가격 미정'}</span>
             </div>
-        `).join('')}
-    `;
-    
-    // 추천 데이터 저장
-    window.currentRecommendations = analysis.recommendations;
+            <p class="course-summary">${course.summary}</p>
+            <a href="${course.link}" target="_blank" class="course-link">자세히 보기</a>
+        `;
+        
+        courseList.appendChild(courseItem);
+    });
 }
 
-// 강좌 선택
-function selectCourse(index) {
-    const cards = document.querySelectorAll('.course-card');
-    cards.forEach(card => card.classList.remove('selected'));
+function selectCourse(course, element) {
+    document.querySelectorAll('.course-item').forEach(item => {
+        item.classList.remove('selected');
+    });
     
-    const selectedCard = document.querySelector(`[data-course-index="${index}"]`);
-    selectedCard.classList.add('selected');
+    element.classList.add('selected');
+    selectedCourse = course;
     
-    selectedCourse = window.currentRecommendations[index];
-    
-    // 계획 생성 진행
-    setTimeout(() => {
-        createStudyPlan();
-    }, 1000);
+    document.getElementById('generatePlanBtn').disabled = false;
 }
 
-// 학습 계획 생성
-async function createStudyPlan() {
+async function generatePlan() {
     if (!selectedCourse) {
-        showToast('강좌를 선택해주세요.');
+        alert('강좌를 선택해주세요.');
         return;
     }
     
-    const dailyHours = parseInt(document.getElementById('daily-hours').value);
-    const startDate = document.getElementById('start-date').value;
-    const restDays = [];
+    const skill = document.getElementById('skillInput').value;
+    const studyHours = document.getElementById('studyHours').value;
+    const startDate = document.getElementById('startDate').value;
+    const assessedLevel = document.getElementById('assessedLevel').textContent;
     
-    // 휴식일 수집
-    document.querySelectorAll('input[type="checkbox"]:checked').forEach(checkbox => {
-        restDays.push(checkbox.value);
-    });
+    const restDays = Array.from(document.querySelectorAll('.checkbox-group input:checked'))
+        .map(cb => cb.value);
     
-    try {
-        showToast('맞춤형 학습 계획을 생성하고 있습니다...', 10000);
+    const result = await apiCall('/generate_plan', {
+        selected_course: selectedCourse,
+        skill, study_hours: studyHours, start_date: startDate,
+        rest_days: restDays, user_level: assessedLevel
+    }, 'POST');
+    
+    if (result) {
+        currentPlan = result;
+        isPlanConfirmed = false;
         
-        const response = await fetch('/api/create-study-plan', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                selected_course: selectedCourse,
-                daily_hours: dailyHours,
-                rest_days: restDays,
-                start_date: startDate
-            })
-        });
+        if (!currentUser.plans) currentUser.plans = [];
+        currentUser.plans.push(result);
         
-        const result = await response.json();
+        showSection('calendarSection');
         
-        if (result.success) {
-            currentPlan = result.plan;
-            currentPlanId = result.plan_id;
-            displayPlanPreview(result.plan);
-            nextStep(4);
-        } else {
-            showToast(result.message);
+        const confirmBtn = document.getElementById('confirmPlanBtn');
+        if (confirmBtn) {
+            confirmBtn.style.display = 'inline-block';
         }
-    } catch (error) {
-        console.error('Plan creation error:', error);
-        showToast('계획 생성 중 오류가 발생했습니다.');
+        
+        renderCalendar();
+        loadTodayTasks();
+        loadReviewMaterials();
     }
 }
 
-// 계획 미리보기 표시
-function displayPlanPreview(plan) {
-    const container = document.getElementById('calendar-container');
-    
-    if (!plan.daily_plan) {
-        container.innerHTML = '<p>계획을 불러올 수 없습니다.</p>';
+function confirmPlan() {
+    if (!currentPlan) {
+        alert('계획이 없습니다.');
         return;
     }
     
-    // 간단한 캘린더 형태로 표시
-    const calendarHTML = `
-        <div class="plan-summary">
-            <h4>📅 총 예상 기간: ${plan.total_duration}</h4>
-            <p>총 ${plan.daily_plan.length}일 학습 계획</p>
-        </div>
-        <div class="plan-preview-list">
-            ${plan.daily_plan.slice(0, 7).map(day => `
-                <div class="preview-day">
-                    <strong>Day ${day.day} (${day.date})</strong>
-                    <ul>
-                        ${day.tasks.map(task => `
-                            <li>${task.task} (${task.duration})</li>
-                        `).join('')}
-                    </ul>
-                </div>
-            `).join('')}
-            ${plan.daily_plan.length > 7 ? '<p>... 그리고 더 많은 계획들</p>' : ''}
-        </div>
-    `;
+    isPlanConfirmed = true;
+    alert('계획이 확정되었습니다! 이제 열심히 공부해보세요! 🎯');
     
-    container.innerHTML = calendarHTML;
-}
-
-// 계획 확정
-function confirmPlan() {
-    showToast('학습 계획이 생성되었습니다! 🎉');
+    document.getElementById('confirmPlanBtn').style.display = 'none';
+    
     showHome();
 }
 
-// 계획 열기
-async function openPlan(planId) {
-    currentPlanId = planId;
+function renderCalendar() {
+    const calendarDays = document.getElementById('calendarDays');
+    const monthDisplay = document.getElementById('currentMonth');
     
-    try {
-        const response = await fetch(`/api/get-plan/${planId}`);
-        const result = await response.json();
+    const monthNames = ['1월', '2월', '3월', '4월', '5월', '6월', 
+                       '7월', '8월', '9월', '10월', '11월', '12월'];
+    monthDisplay.textContent = `${currentMonth.getFullYear()}년 ${monthNames[currentMonth.getMonth()]}`;
+    
+    calendarDays.innerHTML = '';
+    
+    const firstDay = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), 1);
+    const lastDay = new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 0);
+    const startDate = new Date(firstDay);
+    startDate.setDate(startDate.getDate() - firstDay.getDay());
+    
+    for (let i = 0; i < 42; i++) {
+        const date = new Date(startDate);
+        date.setDate(startDate.getDate() + i);
         
-        if (result.success) {
-            currentPlan = result.plan;
-            document.getElementById('plan-title').textContent = `📚 ${result.plan.skill}`;
-            
-            // 오늘 할 일과 어제 진행상황 로드
-            await loadTodayTasks(planId);
-            showScreen('plan-detail-screen');
-        } else {
-            showToast(result.message);
-        }
-    } catch (error) {
-        console.error('Plan loading error:', error);
-        showToast('계획을 불러오는 중 오류가 발생했습니다.');
+        const dayDiv = createCalendarDay(date);
+        calendarDays.appendChild(dayDiv);
     }
 }
 
-// 오늘 할 일 로드
-async function loadTodayTasks(planId) {
-    try {
-        const response = await fetch(`/api/get-today-tasks/${planId}`);
-        const result = await response.json();
-        
-        if (result.success) {
-            // 어제 진행상황이 있으면 복습 자료 표시
-            if (result.yesterday_progress && Object.keys(result.yesterday_progress).length > 0) {
-                await loadReviewMaterials(result.yesterday_progress);
-            } else {
-                document.getElementById('review-section').style.display = 'none';
-                startTodayStudy();
-            }
-            
-            displayTodayTasks(result.today_tasks);
-        }
-    } catch (error) {
-        console.error('Today tasks loading error:', error);
+function createCalendarDay(date) {
+    const dayDiv = document.createElement('div');
+    dayDiv.className = 'calendar-day';
+    
+    const dateStr = date.toISOString().split('T')[0];
+    const isCurrentMonth = date.getMonth() === currentMonth.getMonth();
+    const isToday = dateStr === getCurrentDate();
+    
+    if (!isCurrentMonth) {
+        dayDiv.classList.add('other-month');
     }
-}
-
-// 복습 자료 로드
-async function loadReviewMaterials(yesterdayProgress) {
-    try {
-        const response = await fetch('/api/get-review-materials', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                yesterday_tasks: yesterdayProgress.completed_tasks || []
-            })
+    
+    if (isToday) {
+        dayDiv.style.border = '3px solid #ff6b6b';
+    }
+    
+    const dateNumber = document.createElement('div');
+    dateNumber.className = 'date-number';
+    dateNumber.textContent = date.getDate();
+    dayDiv.appendChild(dateNumber);
+    
+    const dayTasks = findTasksForDate(dateStr);
+    
+    if (dayTasks.length > 0) {
+        dayDiv.classList.add('has-tasks');
+        
+        dayTasks.slice(0, 2).forEach(task => {
+            const taskPreview = document.createElement('div');
+            taskPreview.className = 'task-preview';
+            taskPreview.textContent = task.title;
+            dayDiv.appendChild(taskPreview);
         });
         
-        const result = await response.json();
+        const completedTasks = dayTasks.filter(task => task.completed).length;
+        const progress = Math.round((completedTasks / dayTasks.length) * 100);
         
-        if (result.success && result.materials.length > 0) {
-            displayReviewMaterials(result.materials);
-            document.getElementById('review-section').style.display = 'block';
+        const progressDiv = document.createElement('div');
+        progressDiv.className = 'progress-indicator';
+        
+        if (progress === 100) {
+            progressDiv.innerHTML = '완료!';
+            dayDiv.classList.add('fully-completed');
+            
+            const flowerIcon = document.createElement('div');
+            flowerIcon.className = 'flower-icon';
+            flowerIcon.textContent = '🌸';
+            dayDiv.appendChild(flowerIcon);
+        } else if (progress > 0) {
+            progressDiv.textContent = `${progress}%`;
+            dayDiv.classList.add('completed');
         } else {
-            document.getElementById('review-section').style.display = 'none';
-            startTodayStudy();
+            progressDiv.textContent = '0%';
         }
-    } catch (error) {
-        console.error('Review materials loading error:', error);
-        document.getElementById('review-section').style.display = 'none';
-        startTodayStudy();
+        
+        dayDiv.appendChild(progressDiv);
+    }
+    
+    dayDiv.onclick = () => openDayDetail(dateStr, dayTasks);
+    
+    return dayDiv;
+}
+
+function findTasksForDate(dateStr) {
+    if (!currentPlan || !currentPlan.daily_schedule) return [];
+    
+    const dayData = currentPlan.daily_schedule.find(day => day.date === dateStr);
+    return dayData ? dayData.tasks : [];
+}
+
+function openDayDetail(dateStr, tasks) {
+    const modal = document.getElementById('dayDetailModal');
+    const modalDate = document.getElementById('modalDate');
+    const modalTaskList = document.getElementById('modalTaskList');
+    
+    const today = getCurrentDate();
+    const isToday = dateStr === today;
+    const canEdit = !isPlanConfirmed || isToday;
+    
+    modalDate.textContent = dateStr + (isToday ? ' (오늘)' : '');
+    modalTaskList.innerHTML = '';
+    
+    if (tasks.length === 0) {
+        modalTaskList.innerHTML = '<p>이 날짜에는 할 일이 없습니다.</p>';
+    } else {
+        tasks.forEach((task, index) => {
+            const taskDiv = document.createElement('div');
+            taskDiv.className = `modal-task-item ${task.completed ? 'completed' : ''}`;
+            
+            let statusMessage = '';
+            if (isPlanConfirmed && !isToday) {
+                statusMessage = '(계획 확정 후 오늘만 수정 가능)';
+            } else if (!isToday) {
+                statusMessage = '(오늘만 수정 가능)';
+            }
+            
+            taskDiv.innerHTML = `
+                <h4>${task.title}</h4>
+                <p>${task.description}</p>
+                <p>예상 시간: ${task.duration}</p>
+                ${task.link ? `<a href="${task.link}" target="_blank">관련 링크</a>` : ''}
+                <label>
+                    <input type="checkbox" ${task.completed ? 'checked' : ''} 
+                           ${!canEdit ? 'disabled' : ''}
+                           onchange="updateTaskStatus('${dateStr}', ${index}, this.checked)">
+                    완료 ${statusMessage}
+                </label>
+            `;
+            modalTaskList.appendChild(taskDiv);
+        });
+    }
+    
+    modal.style.display = 'block';
+}
+
+function closeDayModal() {
+    document.getElementById('dayDetailModal').style.display = 'none';
+}
+
+async function updateTaskStatus(dateStr, taskIndex, completed) {
+    const today = getCurrentDate();
+    
+    if (isPlanConfirmed && dateStr !== today) {
+        alert('계획 확정 후에는 오늘 날짜의 할 일만 수정할 수 있습니다.');
+        return;
+    }
+    
+    if (!isPlanConfirmed && dateStr !== today) {
+        alert('오늘 날짜의 할 일만 수정할 수 있습니다.');
+        return;
+    }
+    
+    const result = await apiCall('/update_task', {
+        date: dateStr,
+        task_index: taskIndex,
+        completed: completed
+    }, 'POST');
+    
+    if (result && result.success) {
+        const dayData = currentPlan.daily_schedule.find(day => day.date === dateStr);
+        if (dayData && dayData.tasks[taskIndex]) {
+            dayData.tasks[taskIndex].completed = completed;
+        }
+        
+        renderCalendar();
+        loadTodayTasks();
+        loadReviewMaterials();
+        checkPlanCompletion();
     }
 }
 
-// 복습 자료 표시
-function displayReviewMaterials(materials) {
-    const container = document.getElementById('review-materials');
+function checkPlanCompletion() {
+    if (!currentPlan || !currentPlan.daily_schedule) return;
     
-    container.innerHTML = materials.map(material => `
-        <div class="review-item">
+    const allTasks = currentPlan.daily_schedule.flatMap(day => day.tasks);
+    const completedTasks = allTasks.filter(task => task.completed);
+    
+    if (allTasks.length > 0 && completedTasks.length === allTasks.length) {
+        setTimeout(() => {
+            showCongratulations();
+        }, 1000);
+    }
+}
+
+async function showCongratulations() {
+    const skill = document.getElementById('skillInput').value || '학습';
+    
+    const result = await apiCall('/recommend_next_skills', {
+        completed_skill: skill
+    }, 'POST');
+    
+    if (result && result.next_skills) {
+        displayNextSkills(result.next_skills);
+    }
+    
+    showSection('congratulationSection');
+}
+
+function displayNextSkills(skills) {
+    const nextSkillsList = document.getElementById('nextSkillsList');
+    nextSkillsList.innerHTML = '';
+    
+    skills.forEach(skill => {
+        const skillDiv = document.createElement('div');
+        skillDiv.className = 'next-skill-item';
+        skillDiv.onclick = () => selectNextSkill(skill, skillDiv);
+        skillDiv.innerHTML = `
+            <h4>${skill.skill}</h4>
+            <p>${skill.reason}</p>
+            <span class="skill-difficulty">${skill.difficulty}</span>
+        `;
+        nextSkillsList.appendChild(skillDiv);
+    });
+}
+
+function selectNextSkill(skill, element) {
+    document.querySelectorAll('.next-skill-item').forEach(item => {
+        item.classList.remove('selected');
+    });
+    element.classList.add('selected');
+}
+
+function startNewPlan() {
+    const selectedSkill = document.querySelector('.next-skill-item.selected');
+    if (selectedSkill) {
+        const skillName = selectedSkill.querySelector('h4').textContent;
+        document.getElementById('skillInput').value = skillName;
+    }
+    showCreatePlan();
+}
+
+function loadTodayTasks() {
+    const today = getCurrentDate();
+    const todayTasks = findTasksForDate(today);
+    
+    const todayTasksList = document.getElementById('todayTasksList');
+    todayTasksList.innerHTML = '';
+    
+    if (todayTasks.length === 0) {
+        todayTasksList.innerHTML = '<p>오늘은 할 일이 없습니다. 휴식을 취하세요! 🎉</p>';
+        return;
+    }
+    
+    todayTasks.forEach((task, index) => {
+        const taskDiv = document.createElement('div');
+        taskDiv.className = `task-item ${task.completed ? 'completed' : ''}`;
+        taskDiv.innerHTML = `
+            <input type="checkbox" ${task.completed ? 'checked' : ''} 
+                   onchange="updateTaskStatus('${today}', ${index}, this.checked)">
+            <div class="task-info">
+                <div class="task-title">${task.title}</div>
+                <div class="task-duration">예상 시간: ${task.duration}</div>
+                ${task.link ? `<a href="${task.link}" target="_blank" class="task-link">관련 링크</a>` : ''}
+            </div>
+        `;
+        todayTasksList.appendChild(taskDiv);
+    });
+}
+
+async function loadReviewMaterials() {
+    const yesterday = new Date(devCurrentDate);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const yesterdayStr = yesterday.toISOString().split('T')[0];
+    
+    console.log(`📚 복습 자료 로드 시도 - 어제: ${yesterdayStr}`);
+    
+    const yesterdayTasks = findTasksForDate(yesterdayStr);
+    const completedTopics = yesterdayTasks
+        .filter(task => task.completed)
+        .map(task => task.title);
+    
+    const reviewSection = document.getElementById('reviewMaterials');
+    const reviewList = document.getElementById('reviewList');
+    
+    if (completedTopics.length === 0) {
+        reviewSection.style.display = 'block';
+        reviewList.innerHTML = '<p>어제 완료한 학습 항목이 없습니다. 오늘 열심히 공부해보세요! 💪</p>';
+        console.log('📚 어제 완료한 항목이 없음');
+        return;
+    }
+    
+    console.log(`📚 어제 완료한 항목: ${completedTopics.join(', ')}`);
+    
+    const result = await apiCall('/get_review_materials', {
+        completed_topics: completedTopics
+    }, 'POST');
+    
+    if (result && result.materials && result.materials.length > 0) {
+        displayReviewMaterials(result.materials);
+        reviewSection.style.display = 'block';
+        console.log(`📚 복습 자료 ${result.materials.length}개 로드 완료`);
+    } else {
+        reviewSection.style.display = 'block';
+        reviewList.innerHTML = '<p>복습 자료를 불러오는 중 문제가 발생했습니다. 잠시 후 다시 시도해보세요.</p>';
+        console.log('📚 복습 자료 API 실패');
+    }
+}
+
+function displayReviewMaterials(materials) {
+    const reviewList = document.getElementById('reviewList');
+    reviewList.innerHTML = '';
+    
+    materials.forEach(material => {
+        const materialDiv = document.createElement('div');
+        materialDiv.className = 'review-item';
+        materialDiv.innerHTML = `
+            <span class="review-type">${material.type}</span>
             <h4>${material.title}</h4>
             <p>${material.description}</p>
-            <p><strong>타입:</strong> ${material.type} | <strong>예상 시간:</strong> ${material.duration}</p>
-            ${material.url ? `<a href="${material.url}" target="_blank">자료 보기 →</a>` : ''}
-        </div>
-    `).join('');
-}
-
-// 오늘 학습 시작
-function startTodayStudy() {
-    document.getElementById('review-section').style.display = 'none';
-    document.getElementById('today-study-section').style.display = 'block';
-}
-
-// 오늘 할 일 표시
-function displayTodayTasks(todayTasks) {
-    const container = document.getElementById('today-tasks');
-    
-    if (!todayTasks || !todayTasks.tasks) {
-        container.innerHTML = '<p>오늘은 휴식일입니다! 🌟</p>';
-        return;
-    }
-    
-    container.innerHTML = todayTasks.tasks.map((task, index) => `
-        <div class="task-item" data-task-index="${index}">
-            <div class="task-info">
-                <h4>${task.task}</h4>
-                <p><strong>예상 시간:</strong> ${task.duration}</p>
-                <p><strong>타입:</strong> ${task.type}</p>
-                ${task.url ? `<a href="${task.url}" target="_blank">자료 링크 →</a>` : ''}
-            </div>
-            <input type="checkbox" class="task-checkbox" 
-                   onchange="updateTaskProgress(${index}, this.checked)" 
-                   data-task-index="${index}">
-        </div>
-    `).join('');
-    
-    updateProgressBar();
-}
-
-// 진행률 업데이트
-async function updateTaskProgress(taskIndex, completed) {
-    const today = new Date().toISOString().split('T')[0];
-    
-    try {
-        const response = await fetch('/api/update-progress', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                plan_id: currentPlanId,
-                date: today,
-                task_index: taskIndex,
-                completed: completed
-            })
-        });
-        
-        const result = await response.json();
-        
-        if (result.success) {
-            updateProgressBar();
-            
-            // 모든 태스크 완료 시 축하 화면
-            if (result.progress.completion_percentage === 100) {
-                showCompletionCelebration();
-            }
-        }
-    } catch (error) {
-        console.error('Progress update error:', error);
-    }
-}
-
-// 진행률 바 업데이트
-function updateProgressBar() {
-    const checkboxes = document.querySelectorAll('.task-checkbox');
-    const checkedBoxes = document.querySelectorAll('.task-checkbox:checked');
-    
-    if (checkboxes.length === 0) return;
-    
-    const progress = (checkedBoxes.length / checkboxes.length) * 100;
-    
-    document.getElementById('progress-fill').style.width = `${progress}%`;
-    document.getElementById('progress-text').textContent = `${Math.round(progress)}%`;
-    
-    // 완료된 태스크 스타일 업데이트
-    checkboxes.forEach((checkbox, index) => {
-        const taskItem = checkbox.closest('.task-item');
-        if (checkbox.checked) {
-            taskItem.classList.add('completed');
-        } else {
-            taskItem.classList.remove('completed');
-        }
+            <a href="${material.url}" target="_blank">보러가기</a>
+        `;
+        reviewList.appendChild(materialDiv);
     });
 }
 
-// 완료 축하 화면
-function showCompletionCelebration() {
-    document.getElementById('completion-celebration').style.display = 'block';
-    showToast('🎉 오늘 학습 완료! 정말 멋져요!');
-    
-    // 3초 후 숨기기
-    setTimeout(() => {
-        document.getElementById('completion-celebration').style.display = 'none';
-    }, 5000);
+function changeMonth(direction) {
+    currentMonth.setMonth(currentMonth.getMonth() + direction);
+    renderCalendar();
 }
 
-// 다음 스킬 추천 (계획 완료 시)
-async function recommendNextSkill(completedSkill) {
-    try {
-        const response = await fetch('/api/recommend-next-skill', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                completed_skill: completedSkill,
-                user_level: 'intermediate'
-            })
-        });
-        
-        const result = await response.json();
-        
-        if (result.success) {
-            displayNextSkillRecommendations(result.recommendations);
-            showScreen('next-skill-screen');
-        }
-    } catch (error) {
-        console.error('Next skill recommendation error:', error);
+function updateTodayDate() {
+    const options = { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' };
+    document.getElementById('todayDate').textContent = 
+        devCurrentDate.toLocaleDateString('ko-KR', options);
+}
+
+function initDevControls() {
+    const devDateInput = document.getElementById('devCurrentDate');
+    devDateInput.value = devCurrentDate.toISOString().split('T')[0];
+}
+
+function prepareDateChange() {
+    const devDateInput = document.getElementById('devCurrentDate');
+    const newDateStr = devDateInput.value;
+    
+    if (newDateStr) {
+        pendingDateChange = new Date(newDateStr);
+        document.getElementById('confirmDateBtn').disabled = false;
+        console.log('날짜 변경 대기 중:', newDateStr);
     }
 }
 
-// 다음 스킬 추천 표시
-function displayNextSkillRecommendations(recommendations) {
-    document.getElementById('completed-skill-name').textContent = currentPlan.skill;
-    document.getElementById('completion-date').textContent = new Date().toLocaleDateString();
+function confirmDateChange() {
+    if (!pendingDateChange) return;
     
-    const container = document.getElementById('next-skill-options');
+    const oldDate = devCurrentDate.toISOString().split('T')[0];
+    devCurrentDate = new Date(pendingDateChange);
+    const newDate = devCurrentDate.toISOString().split('T')[0];
     
-    container.innerHTML = recommendations.map((rec, index) => `
-        <div class="recommendation-card" onclick="selectNextSkill(${index})" data-rec-index="${index}">
-            <h4>${rec.skill}</h4>
-            <p><strong>추천 이유:</strong> ${rec.reason}</p>
-            <p><strong>연관성:</strong> ${rec.connection}</p>
-            <p><strong>커리어 도움:</strong> ${rec.career_benefit}</p>
-            <div class="recommendation-meta">
-                <span class="course-difficulty">${rec.difficulty}</span>
-            </div>
-        </div>
-    `).join('');
+    alert(`날짜가 변경되었습니다: ${newDate}`);
     
-    window.nextSkillRecommendations = recommendations;
+    updateTodayDate();
+    renderCalendar();
+    loadTodayTasks();
+    loadReviewMaterials();
+    
+    document.getElementById('confirmDateBtn').disabled = true;
+    pendingDateChange = null;
+    
+    console.log(`날짜 변경 완료: ${oldDate} → ${newDate}`);
 }
 
-// 다음 스킬 선택
-function selectNextSkill(index) {
-    const cards = document.querySelectorAll('.recommendation-card');
-    cards.forEach(card => card.classList.remove('selected'));
+function resetToToday() {
+    const oldDate = devCurrentDate.toISOString().split('T')[0];
+    devCurrentDate = new Date();
+    const newDate = devCurrentDate.toISOString().split('T')[0];
     
-    const selectedCard = document.querySelector(`[data-rec-index="${index}"]`);
-    selectedCard.classList.add('selected');
+    document.getElementById('devCurrentDate').value = newDate;
+    document.getElementById('confirmDateBtn').disabled = true;
+    pendingDateChange = null;
     
-    const selectedSkill = window.nextSkillRecommendations[index];
+    alert(`날짜가 오늘로 리셋되었습니다: ${newDate}`);
     
-    // 선택된 스킬로 새 계획 생성 과정 시작
-    setTimeout(() => {
-        startNewPlanWithSelectedSkill(selectedSkill.skill);
-    }, 1000);
+    updateTodayDate();
+    renderCalendar();
+    loadTodayTasks();
+    loadReviewMaterials();
+    
+    console.log(`날짜 리셋: ${oldDate} → ${newDate}`);
 }
 
-// 선택된 스킬로 새 계획 시작
-function startNewPlanWithSelectedSkill(skillName) {
-    showCreatePlan();
+function getCurrentDate() {
+    return devCurrentDate.toISOString().split('T')[0];
+}
+
+function editDayTasks() {
+    alert('할 일 수정 기능은 현재 개발 중입니다.');
+    closeDayModal();
+}
+
+window.onclick = function(event) {
+    const modal = document.getElementById('dayDetailModal');
+    if (event.target === modal) {
+        closeDayModal();
+    }
+}
+
+document.addEventListener('keydown', function(event) {
+    if (event.key === 'Escape') {
+        closeDayModal();
+    }
     
-    // 스킬 이름 미리 입력
-    document.getElementById('skill-name').value = skillName;
-    
-    showToast('새로운 학습 계획을 시작해보세요!');
-}
-
-// 추천 건너뛰기
-function skipRecommendation() {
-    showHome();
-    showToast('언제든 새로운 계획을 만들 수 있어요!');
-}
-
-// 유틸리티 함수들
-function formatDate(dateString) {
-    const date = new Date(dateString);
-    return date.toLocaleDateString('ko-KR');
-}
-
-function getDayName(dateString) {
-    const date = new Date(dateString);
-    const days = ['일', '월', '화', '수', '목', '금', '토'];
-    return days[date.getDay()];
-}
-
-// 에러 핸들링
-window.addEventListener('error', function(e) {
-    console.error('JavaScript error:', e.error);
-    showToast('오류가 발생했습니다. 페이지를 새로고침해보세요.');
+    if (event.key === 'Enter' && document.getElementById('quizSection').classList.contains('active')) {
+        const nextBtn = document.getElementById('nextQuizBtn');
+        if (!nextBtn.disabled) {
+            nextQuestion();
+        }
+    }
 });
 
-// 네트워크 에러 핸들링
-window.addEventListener('unhandledrejection', function(e) {
-    console.error('Unhandled promise rejection:', e.reason);
-    showToast('네트워크 오류가 발생했습니다.');
+window.addEventListener('beforeunload', function(event) {
+    if (currentUser && currentPlan) {
+        event.preventDefault();
+        event.returnValue = '';
+    }
 });
+
+console.log('Palearn JavaScript 로드 완료! 🧠✨');

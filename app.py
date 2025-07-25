@@ -1,22 +1,88 @@
-from flask import Flask, render_template, request, jsonify, session
+from flask import Flask, request, jsonify, render_template
 import openai
-import os
-from datetime import datetime, timedelta
 import json
-import uuid
+import datetime
+from typing import Dict, List, Any
+import requests
 import re
 
-app = Flask(__name__)
-app.secret_key = 'palearn-secret-key-2025'
+app = Flask(__name__, static_folder='static', template_folder='templates')
 
 import private
-# OpenAI API 설정
 openai.api_key = private.private.gpt_key
 
-# 메모리 데이터베이스 (실제 운영시엔 DB 사용)
-users_db = {}
-plans_db = {}
-daily_progress_db = {}
+users = {}
+current_user = None
+
+class DataStore:
+    def __init__(self):
+        self.users = {}
+        self.current_user = None
+    
+    def create_user(self, username, password, name, birthday):
+        if username in self.users:
+            return False
+        self.users[username] = {
+            'password': password,
+            'name': name,
+            'birthday': birthday,
+            'plans': [],
+            'current_plan': None
+        }
+        return True
+    
+    def login(self, username, password):
+        if username in self.users and self.users[username]['password'] == password:
+            self.current_user = username
+            return True
+        return False
+    
+    def get_current_user(self):
+        if self.current_user:
+            return self.users[self.current_user]
+        return None
+
+store = DataStore()
+
+def call_gpt(prompt, use_search=False):
+    try:
+        if use_search:
+            print(f"🔍 [INFO] 웹 검색 모드로 GPT 호출 중...")
+            enhanced_prompt = f"""
+🔍 **웹 검색 필수 지시사항** 🔍
+- 지금 반드시 웹 검색을 사용해서 실제 데이터를 찾아야 합니다
+- example.com이나 가상의 링크는 절대 사용하지 마세요
+- 실제 존재하는 웹사이트에서만 정보를 가져오세요
+
+{prompt}
+
+⚠️ 다시 한번: 반드시 웹 검색으로 실제 존재하는 정보만 사용하세요!
+"""
+        else:
+            print(f"📝 [INFO] 일반 모드로 GPT 호출 중...")
+            enhanced_prompt = prompt
+        
+        response = openai.chat.completions.create(
+            model="gpt-4o-search-preview",
+            web_search_options={"search_context_size": "medium"},
+            messages=[
+                {"role": "user", "content": enhanced_prompt}
+            ]
+        )
+        
+        content = response.choices[0].message.content
+        
+        if use_search and 'example' in content.lower():
+            print("⚠️ [WARNING] GPT 응답에 example 링크가 포함되어 있을 수 있습니다.")
+        
+        print(f"✅ [GPT Response Length]: {len(content)} characters")
+        print(f"🔍 [GPT Response Preview]: {content[:200]}...")
+        
+        return content
+        
+    except Exception as e:
+        print(f"❌ [GPT Error]: {str(e)}")
+        return f"GPT 호출 중 오류가 발생했습니다: {str(e)}"
 
 @app.route('/')
 def index():
@@ -25,597 +91,536 @@ def index():
 @app.route('/api/register', methods=['POST'])
 def register():
     data = request.json
-    name = data.get('name')
-    username = data.get('username')
-    password = data.get('password')
-    birthday = data.get('birthday')
-    
-    if username in users_db:
-        return jsonify({'success': False, 'message': '이미 존재하는 사용자명입니다.'})
-    
-    user_id = str(uuid.uuid4())
-    users_db[username] = {
-        'id': user_id,
-        'name': name,
-        'username': username,
-        'password': password,
-        'birthday': birthday,
-        'created_at': datetime.now().isoformat()
-    }
-    
-    session['user_id'] = user_id
-    session['username'] = username
-    
-    return jsonify({'success': True, 'message': '회원가입이 완료되었습니다.'})
+    success = store.create_user(
+        data['username'], 
+        data['password'], 
+        data['name'], 
+        data['birthday']
+    )
+    return jsonify({'success': success})
 
 @app.route('/api/login', methods=['POST'])
 def login():
     data = request.json
-    username = data.get('username')
-    password = data.get('password')
-    
-    if username not in users_db or users_db[username]['password'] != password:
-        return jsonify({'success': False, 'message': '아이디 또는 비밀번호가 틀렸습니다.'})
-    
-    session['user_id'] = users_db[username]['id']
-    session['username'] = username
-    
-    return jsonify({'success': True, 'message': '로그인 성공'})
+    success = store.login(data['username'], data['password'])
+    if success:
+        user = store.get_current_user()
+        return jsonify({
+            'success': True, 
+            'user': {
+                'name': user['name'],
+                'plans': user['plans'],
+                'current_plan': user['current_plan']
+            }
+        })
+    return jsonify({'success': False})
 
-@app.route('/api/logout', methods=['POST'])
-def logout():
-    session.clear()
-    return jsonify({'success': True})
-
-@app.route('/api/user-info')
-def get_user_info():
-    if 'user_id' not in session:
-        return jsonify({'success': False, 'message': '로그인이 필요합니다.'})
-    
-    username = session['username']
-    user = users_db[username]
-    
-    # 사용자의 계획들 가져오기
-    user_plans = []
-    for plan_id, plan in plans_db.items():
-        if plan['user_id'] == session['user_id']:
-            user_plans.append(plan)
-    
-    return jsonify({
-        'success': True,
-        'user': user,
-        'plans': user_plans
-    })
-
-@app.route('/api/generate-quiz', methods=['POST'])
+@app.route('/api/generate_quiz', methods=['POST'])
 def generate_quiz():
-    if 'user_id' not in session:
-        return jsonify({'success': False, 'message': '로그인이 필요합니다.'})
-    
     data = request.json
-    skill = data.get('skill')
-    knowledge_level = data.get('knowledge_level')
+    skill = data['skill']
+    level = data['level']
+    
+    prompt = f"""
+    '{skill}' 분야의 {level} 수준에 맞는 O/X 퀴즈 10개를 만들어줘.
+    
+    반드시 다음 JSON 형식으로 응답해줘:
+    {{
+        "quizzes": [
+            {{
+                "question": "질문 내용",
+                "answer": true,
+                "explanation": "정답 해설"
+            }}
+        ]
+    }}
+    
+    답은 true(O) 또는 false(X)로만 표현하고, 설명은 간단명료하게 작성해줘.
+    """
+    
+    response = call_gpt(prompt)
     
     try:
-        response = openai.responses.create(
-            model="gpt-4o",
-            tools=[{"type": "web_search_preview"}],
-            input=f"""당신은 사용자의 실력을 정확히 파악하기 위한 O/X 퀴즈를 생성하는 전문가입니다. 
-            스킬: {skill}, 자가평가 수준: {knowledge_level}에 대한 실력 측정용 O/X 퀴즈 10문제를 만들어주세요.
-            
-            응답은 반드시 다음 JSON 형식으로 해주세요:
-            {{
-                "questions": [
-                    {{
-                        "id": 1,
-                        "question": "문제 내용",
-                        "answer": true 또는 false,
-                        "difficulty": "beginner/intermediate/advanced",
-                        "explanation": "정답 해설"
-                    }}
-                ]
-            }}"""
-        )
-        
-        quiz_content = response.output_text
-        
-        # JSON 파싱 시도
-        try:
-            # JSON 부분만 추출
-            json_start = quiz_content.find('{')
-            json_end = quiz_content.rfind('}') + 1
-            if json_start != -1 and json_end != -1:
-                json_str = quiz_content[json_start:json_end]
-                quiz_data = json.loads(json_str)
-            else:
-                raise ValueError("JSON not found")
-        except:
-            # JSON 파싱 실패시 기본 퀴즈 생성
-            quiz_data = {"questions": []}
-            for i in range(1, 11):
-                quiz_data["questions"].append({
-                    "id": i,
-                    "question": f"{skill} 관련 기초 문제 {i}: 이 기술을 사용할 때 중요한 것은 기본 개념을 이해하는 것이다.",
-                    "answer": True if i % 2 == 0 else False,
-                    "difficulty": "beginner",
-                    "explanation": "기본 개념 이해는 모든 기술 학습의 기초입니다."
-                })
-        
-        return jsonify({
-            'success': True,
-            'quiz': quiz_data
-        })
-        
-    except Exception as e:
-        return jsonify({'success': False, 'message': f'퀴즈 생성 중 오류가 발생했습니다: {str(e)}'})
+        json_match = re.search(r'\{.*\}', response, re.DOTALL)
+        if json_match:
+            quiz_data = json.loads(json_match.group())
+            return jsonify(quiz_data)
+    except:
+        pass
+    
+    return jsonify({
+        "quizzes": [
+            {
+                "question": f"{skill} 관련 기본 질문입니다.",
+                "answer": True,
+                "explanation": "기본 설명입니다."
+            }
+        ]
+    })
 
-@app.route('/api/analyze-quiz-result', methods=['POST'])
-def analyze_quiz_result():
-    if 'user_id' not in session:
-        return jsonify({'success': False, 'message': '로그인이 필요합니다.'})
-    
+@app.route('/api/submit_answers', methods=['POST'])
+def submit_answers():
     data = request.json
-    skill = data.get('skill')
-    quiz_answers = data.get('answers')
-    correct_count = data.get('correct_count')
+    answers = data['answers']
+    correct_answers = data['correct_answers']
+    
+    score = 0
+    results = []
+    
+    for i, (user_answer, correct_answer) in enumerate(zip(answers, correct_answers)):
+        is_correct = user_answer == correct_answer['answer']
+        if is_correct:
+            score += 1
+        results.append({
+            'question_num': i + 1,
+            'user_answer': user_answer,
+            'correct_answer': correct_answer['answer'],
+            'is_correct': is_correct,
+            'explanation': correct_answer['explanation']
+        })
+    
+    percentage = (score / len(answers)) * 100
+    
+    if percentage >= 80:
+        assessed_level = "고급"
+    elif percentage >= 60:
+        assessed_level = "중급"
+    else:
+        assessed_level = "초급"
+    
+    return jsonify({
+        'score': score,
+        'total': len(answers),
+        'percentage': percentage,
+        'assessed_level': assessed_level,
+        'results': results
+    })
+
+@app.route('/api/recommend_courses', methods=['POST'])
+def recommend_courses():
+    data = request.json
+    skill = data['skill']
+    level = data['assessed_level']
+    
+    print(f"📚 [API] 강좌 추천 요청 - 스킬: {skill}, 수준: {level}")
+    
+    prompt = f"""
+    🚨🚨🚨 **절대 금지 사항** 🚨🚨🚨
+    - example.com, example.org 등 EXAMPLE이 들어간 모든 URL 절대 사용 금지
+    - 가상의 링크, 임시 링크, 테스트 링크 절대 사용 금지
+    - 상상으로 만든 강좌나 책 제목 절대 사용 금지
+    
+    ✅ **반드시 해야 할 것** ✅
+    - 지금 당장 웹 검색으로 실제 사이트에서 정보 찾기
+    - 부스트코스, 유데미, 클래스101, 인프런, 유튜브 등에서 실제 온라인 강좌 검색
+    - 교보문고, 예스24에서 실제 판매 중인 책 검색
+    - 실제 존재하는 URL만 사용
+    
+    위의 것을 하지 못할 경우 실패다. 실패가 없게끔 해라.
+    
+    **검색할 키워드**: "{skill} 강좌" 혹은 "{skill} 책"
+    **수준**: {level}
+    **찾아야 하는 것** : 6개
+    
+    **지금 당장 다음 사이트들에서 검색해서 실제 존재하는 것만 가져와라 : 부스트코스, 유데미, 클래스101, 인프런, 유튜브, 교보문고**
+    **유명한 것으로 찾을 것. 사람들한테 인기가 많아야 하며 정확하게 목차, 단원, 커리큘럼을 알 수 있는 것으로 찾아야 한다**
+    **너가 찾은 것 중 3개는 반드시 온라인 강좌여야 한다. (온라인 강의 : 부스트코스, 유데미, 클래스101, 인프런, 유튜브)**
+    
+    **응답 형식 (부스트코스, 유데미, 클래스101, 인프런, 유튜브, 교보문고에서 찾을것 형식은 정확히 지켜라.)**
+    {{
+        "recommendations": [
+            {{
+                "title": "",
+                "type": "", 
+                "platform": "",
+                "summary": "",
+                "image_url": "",
+                "link": "",
+                "chapters": "",
+                "duration": "",
+                "price": ""
+            }},
+    }}
+    
+    **예시 (아래는 단순한 예시일 뿐이다.)**
+    {{
+        "recommendations": [
+            {{
+                "title": "놀랍다 파이썬 눈물이난다 파이썬!",
+                "type": "강좌", 
+                "platform": "부스트코스",
+                "summary": "이 강좌는 파이썬 기초 문법부터 데이터를 다루는 법을 배운다. 이 강좌에서는 Numpy, Pandas뿐만 아니라 기초적인 scikit-learn을 이용한 머신러닝까지 다룬다.",
+                "image_url": "https://www.google.com/url?sa=i&url=https%3A%2F%2Fevent.kyobobook.co.kr%2Fdetail%2F207000&psig=AOvVaw3AxX8TW4CrmKea2WSm78HS&ust=1753506877755000&source=images&cd=vfe&opi=89978449&ved=0CBUQjRxqFwoTCPjCu6ag144DFQAAAAAdAAAAABAE",
+                "link": "https://www.boostcourse.org/cs122",
+                "chapters": "20",
+                "duration": "약 3주 과정",
+                "price": "300,000원"
+            }},
+    }}
+    
+    🚨 **마지막 경고**: example이 포함된 URL이 하나라도 있으면 완전히 틀린 답변이다. 반드시 실제 웹사이트에서 검색해서 실제 존재하는 강좌와 책만 찾아라!!!!!!!!!!!!!!!!!!!!1
+    """
+    
+    response = call_gpt(prompt, use_search=True)
     
     try:
-        response = openai.responses.create(
-            model="gpt-4o",
-            tools=[{"type": "web_search_preview"}],
-            input=f"""당신은 학습 코스 추천 전문가입니다. 사용자의 퀴즈 결과를 바탕으로 적절한 수준의 강좌나 책을 웹에서 찾아 추천해주세요.
+        json_match = re.search(r'\{.*\}', response, re.DOTALL)
+        if json_match:
+            recommendations_data = json.loads(json_match.group())
             
-            스킬: {skill}
-            퀴즈 정답률: {correct_count}/10
+            has_example = False
+            for rec in recommendations_data.get('recommendations', []):
+                link = rec.get('link', '').lower()
+                if 'example' in link:
+                    print(f"🚨 [CRITICAL ERROR] Example 링크 발견: {rec.get('title')} -> {rec.get('link')}")
+                    has_example = True
             
-            최신 한국어 학습 자료를 우선으로 해서 추천해주세요. 응답은 반드시 다음 JSON 형식으로 해주세요:
+            if has_example:
+                print("🚨 GPT가 여전히 example 링크를 사용했습니다. 기본 추천으로 대체합니다.")
+                raise ValueError("Example 링크 사용으로 인한 실패")
+            
+            print("✅ 모든 링크가 실제 사이트입니다.")
+            return jsonify(recommendations_data)
+            
+    except Exception as e:
+        print(f"🚨 [GPT Parse Error]: {e}")
+        print(f"🚨 원본 GPT 응답: {response[:500]}...")
+    
+    print(f"🔄 기본 추천 사용: {skill} 관련 일반적인 추천")
+    return jsonify({
+        "recommendations": [
+            {
+                "title": f"{skill} 온라인 강의 찾기",
+                "type": "강좌",
+                "platform": "인프런",
+                "summary": f"{skill} 관련 강의를 인프런에서 검색해보세요.",
+                "image_url": "https://via.placeholder.com/300x200?text=Inflearn",
+                "link": f"https://inflearn.com/courses?s={skill}",
+                "chapters": 10,
+                "duration": "4주",
+                "price": "검색 후 확인"
+            },
+            {
+                "title": f"{skill} 전문 강좌",
+                "type": "강좌",
+                "platform": "유데미",
+                "summary": f"{skill} 전문 강좌를 유데미에서 확인해보세요.",
+                "image_url": "https://via.placeholder.com/300x200?text=Udemy",
+                "link": f"https://udemy.com/courses/search/?q={skill}",
+                "chapters": 15,
+                "duration": "6주",
+                "price": "검색 후 확인"
+            },
+            {
+                "title": f"{skill} 관련 도서",
+                "type": "책", 
+                "platform": "교보문고",
+                "summary": f"{skill} 학습 도서를 교보문고에서 찾아보세요.",
+                "image_url": "https://via.placeholder.com/300x200?text=Kyobo",
+                "link": f"https://kyobobook.co.kr/search/SearchCommonMain.jsp?vPstrKeyWord={skill}",
+                "chapters": 15,
+                "duration": "6주",
+                "price": "검색 후 확인"
+            },
+            {
+                "title": f"{skill} 전문서적",
+                "type": "책",
+                "platform": "예스24", 
+                "summary": f"{skill} 전문 서적을 예스24에서 찾아보세요.",
+                "image_url": "https://via.placeholder.com/300x200?text=Yes24",
+                "link": f"https://yes24.com/Product/Search?domain=ALL&query={skill}",
+                "chapters": 20,
+                "duration": "8주",
+                "price": "검색 후 확인"
+            }
+        ]
+    })
+
+@app.route('/api/generate_plan', methods=['POST'])
+def generate_plan():
+    data = request.json
+    
+    prompt = f"""
+    다음 정보를 바탕으로 상세한 학습 계획을 만들어줘:
+    
+    - 선택한 강좌: {data['selected_course']['title']}
+    - 총 챕터 수: {data['selected_course']['chapters']}
+    - 하루 공부 시간: {data['study_hours']}시간
+    - 시작 날짜: {data['start_date']}
+    - 공부 안하는 요일: {data['rest_days']}
+    - 사용자 수준: {data['user_level']}
+    
+    각 날짜별로 구체적인 학습 내용을 배정해줘. 
+    
+    반드시 다음 JSON 형식으로 응답해줘:
+    {{
+        "plan_name": "계획 이름",
+        "total_duration": "총 기간",
+        "daily_schedule": [
             {{
-                "level_analysis": "사용자 수준 분석",
-                "recommendations": [
+                "date": "YYYY-MM-DD",
+                "tasks": [
                     {{
-                        "title": "강좌/책 제목",
-                        "type": "course 또는 book",
-                        "description": "간단한 설명",
+                        "title": "학습 내용 제목",
+                        "description": "상세 설명",
                         "duration": "예상 소요시간",
-                        "difficulty": "beginner/intermediate/advanced",
-                        "url": "링크 (있다면)",
-                        "chapters": ["챕터1", "챕터2", "챕터3"],
-                        "image_url": "이미지 URL (있다면)"
+                        "link": "관련 링크",
+                        "completed": false
                     }}
                 ]
-            }}"""
-        )
-        
-        recommendations_content = response.output_text
-        
-        try:
-            # JSON 부분만 추출
-            json_start = recommendations_content.find('{')
-            json_end = recommendations_content.rfind('}') + 1
-            if json_start != -1 and json_end != -1:
-                json_str = recommendations_content[json_start:json_end]
-                recommendations_data = json.loads(json_str)
-            else:
-                raise ValueError("JSON not found")
-        except:
-            # 기본 추천 데이터
-            level_desc = "초급" if correct_count < 4 else "중급" if correct_count < 7 else "고급"
-            recommendations_data = {
-                "level_analysis": f"{skill} 분야에서 {correct_count}/10 정답률을 보이셨습니다. {level_desc} 수준으로 판단됩니다.",
-                "recommendations": [
-                    {
-                        "title": f"{skill} 기초 완성 과정",
-                        "type": "course",
-                        "description": "기초부터 체계적으로 학습하는 실전 과정",
-                        "duration": "4-6주",
-                        "difficulty": level_desc.lower().replace("급", ""),
-                        "url": "",
-                        "chapters": ["기초 개념", "실습", "프로젝트", "심화 학습"],
-                        "image_url": ""
-                    },
-                    {
-                        "title": f"{skill} 실무 활용서",
-                        "type": "book",
-                        "description": "실무에서 바로 활용 가능한 예제 중심 도서",
-                        "duration": "3-4주",
-                        "difficulty": level_desc.lower().replace("급", ""),
-                        "url": "",
-                        "chapters": ["기본 문법", "실전 예제", "프로젝트"],
-                        "image_url": ""
-                    },
-                    {
-                        "title": f"{skill} 온라인 강의",
-                        "type": "course",
-                        "description": "단계별 학습이 가능한 온라인 강의",
-                        "duration": "5-8주",
-                        "difficulty": level_desc.lower().replace("급", ""),
-                        "url": "",
-                        "chapters": ["입문", "기초", "응용", "실전"],
-                        "image_url": ""
-                    }
-                ]
-            }
-        
-        return jsonify({
-            'success': True,
-            'analysis': recommendations_data
-        })
-        
-    except Exception as e:
-        return jsonify({'success': False, 'message': f'분석 중 오류가 발생했습니다: {str(e)}'})
-
-@app.route('/api/create-study-plan', methods=['POST'])
-def create_study_plan():
-    if 'user_id' not in session:
-        return jsonify({'success': False, 'message': '로그인이 필요합니다.'})
+            }}
+        ]
+    }}
     
-    data = request.json
-    selected_course = data.get('selected_course')
-    daily_hours = data.get('daily_hours')
-    rest_days = data.get('rest_days', [])
-    start_date = data.get('start_date')
+    실제 달력 날짜를 계산해서 {data['start_date']}부터 시작하여 순차적으로 배정해줘.
+    실습같은 요소도 넣어줘야해. 블로그를 통해서 개념 체화라던지, 아니면 깃헙을 찾아서 관련 코드를 리뷰해본다던지 말야. 
+    공부 안하는 요일({data['rest_days']})은 제외하고 계획해줘.
+    """
+    
+    response = call_gpt(prompt)
     
     try:
-        response = openai.responses.create(
-            model="gpt-4o",
-            input=f"""당신은 개인 맞춤형 학습 계획 생성 전문가입니다. 
-            선택된 강좌/책 정보와 사용자의 일일 가능 시간을 바탕으로 상세한 학습 계획을 세워주세요.
+        json_match = re.search(r'\{.*\}', response, re.DOTALL)
+        if json_match:
+            plan_data = json.loads(json_match.group())
             
-            선택된 과정: {json.dumps(selected_course, ensure_ascii=False)}
-            일일 가능 시간: {daily_hours}시간
-            휴식일: {rest_days}
-            시작일: {start_date}
+            user = store.get_current_user()
+            if user:
+                user['plans'].append(plan_data)
+                user['current_plan'] = len(user['plans']) - 1
             
-            응답은 반드시 다음 JSON 형식으로 해주세요:
-            {{
-                "total_duration": "총 예상 기간",
-                "daily_plan": [
-                    {{
-                        "day": 1,
-                        "date": "2025-07-25",
-                        "tasks": [
-                            {{
-                                "task": "할 일",
-                                "duration": "소요시간",
-                                "type": "lecture/reading/practice/review",
-                                "url": "링크 (있다면)"
-                            }}
-                        ]
-                    }}
-                ]
-            }}"""
-        )
+            return jsonify(plan_data)
+    except Exception as e:
+        print(f"Plan generation error: {e}")
+    
+    return jsonify({
+        "plan_name": f"{data.get('skill', 'Unknown')} 학습 계획",
+        "total_duration": "4주",
+        "daily_schedule": []
+    })
+
+@app.route('/api/update_task', methods=['POST'])
+def update_task():
+    data = request.json
+    date = data['date']
+    task_index = data['task_index']
+    completed = data['completed']
+    
+    user = store.get_current_user()
+    if user and user['current_plan'] is not None:
+        plan = user['plans'][user['current_plan']]
         
-        plan_content = response.output_text
-        
-        try:
-            # JSON 부분만 추출
-            json_start = plan_content.find('{')
-            json_end = plan_content.rfind('}') + 1
-            if json_start != -1 and json_end != -1:
-                json_str = plan_content[json_start:json_end]
-                plan_data = json.loads(json_str)
-            else:
-                raise ValueError("JSON not found")
-        except:
-            # 기본 계획 생성
-            start_dt = datetime.strptime(start_date, '%Y-%m-%d')
-            plan_data = {
-                "total_duration": "4주",
-                "daily_plan": []
-            }
-            
-            day_count = 0
-            for i in range(28):  # 4주
-                current_date = start_dt + timedelta(days=i)
-                weekday = current_date.strftime('%A').lower()
-                
-                # 휴식일 체크
-                if weekday not in [day.lower() for day in rest_days]:
-                    day_count += 1
-                    tasks = []
+        for day in plan['daily_schedule']:
+            if day['date'] == date:
+                if 0 <= task_index < len(day['tasks']):
+                    day['tasks'][task_index]['completed'] = completed
                     
-                    # 일일 학습 시간을 나눠서 태스크 생성
-                    if daily_hours >= 2:
-                        tasks.append({
-                            "task": f"{selected_course['title']} - 이론 학습",
-                            "duration": f"{daily_hours//2}시간",
-                            "type": "lecture",
-                            "url": selected_course.get('url', '')
-                        })
-                        tasks.append({
-                            "task": f"{selected_course['title']} - 실습/복습",
-                            "duration": f"{daily_hours - daily_hours//2}시간",
-                            "type": "practice",
-                            "url": ""
-                        })
-                    else:
-                        tasks.append({
-                            "task": f"{selected_course['title']} - Day {day_count} 학습",
-                            "duration": f"{daily_hours}시간",
-                            "type": "lecture",
-                            "url": selected_course.get('url', '')
-                        })
+                    total_tasks = len(day['tasks'])
+                    completed_tasks = sum(1 for task in day['tasks'] if task['completed'])
+                    progress = (completed_tasks / total_tasks) * 100 if total_tasks > 0 else 0
                     
-                    plan_data["daily_plan"].append({
-                        "day": day_count,
-                        "date": current_date.strftime('%Y-%m-%d'),
-                        "tasks": tasks
+                    return jsonify({
+                        'success': True,
+                        'progress': progress,
+                        'completed_tasks': completed_tasks,
+                        'total_tasks': total_tasks
                     })
-        
-        # 계획 저장
-        plan_id = str(uuid.uuid4())
-        plans_db[plan_id] = {
-            'id': plan_id,
-            'user_id': session['user_id'],
-            'skill': selected_course['title'],
-            'course_info': selected_course,
-            'plan_data': plan_data,
-            'created_at': datetime.now().isoformat(),
-            'status': 'active',
-            'start_date': start_date,
-            'daily_hours': daily_hours,
-            'rest_days': rest_days
-        }
-        
-        return jsonify({
-            'success': True,
-            'plan_id': plan_id,
-            'plan': plan_data
-        })
-        
-    except Exception as e:
-        return jsonify({'success': False, 'message': f'계획 생성 중 오류가 발생했습니다: {str(e)}'})
+    
+    return jsonify({'success': False})
 
-@app.route('/api/get-plan/<plan_id>')
-def get_plan(plan_id):
-    if 'user_id' not in session:
-        return jsonify({'success': False, 'message': '로그인이 필요합니다.'})
+@app.route('/api/get_today_tasks', methods=['GET'])
+def get_today_tasks():
+    today = datetime.date.today().strftime('%Y-%m-%d')
     
-    if plan_id not in plans_db:
-        return jsonify({'success': False, 'message': '계획을 찾을 수 없습니다.'})
+    user = store.get_current_user()
+    if user and user['current_plan'] is not None:
+        plan = user['plans'][user['current_plan']]
+        
+        for day in plan['daily_schedule']:
+            if day['date'] == today:
+                return jsonify({
+                    'success': True,
+                    'date': today,
+                    'tasks': day['tasks']
+                })
     
-    plan = plans_db[plan_id]
-    if plan['user_id'] != session['user_id']:
-        return jsonify({'success': False, 'message': '권한이 없습니다.'})
-    
-    return jsonify({
-        'success': True,
-        'plan': plan
-    })
+    return jsonify({'success': False, 'tasks': []})
 
-@app.route('/api/get-today-tasks/<plan_id>')
-def get_today_tasks(plan_id):
-    if 'user_id' not in session:
-        return jsonify({'success': False, 'message': '로그인이 필요합니다.'})
-    
-    if plan_id not in plans_db:
-        return jsonify({'success': False, 'message': '계획을 찾을 수 없습니다.'})
-    
-    plan = plans_db[plan_id]
-    today = datetime.now().strftime('%Y-%m-%d')
-    
-    # 오늘 할 일 찾기
-    today_tasks = None
-    for day_plan in plan['plan_data']['daily_plan']:
-        if day_plan['date'] == today:
-            today_tasks = day_plan
-            break
-    
-    # 어제 한 일 체크
-    yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
-    yesterday_progress = daily_progress_db.get(f"{session['user_id']}_{plan_id}_{yesterday}", {})
-    
-    return jsonify({
-        'success': True,
-        'today_tasks': today_tasks,
-        'yesterday_progress': yesterday_progress
-    })
-
-@app.route('/api/get-review-materials', methods=['POST'])
+@app.route('/api/get_review_materials', methods=['POST'])
 def get_review_materials():
-    if 'user_id' not in session:
-        return jsonify({'success': False, 'message': '로그인이 필요합니다.'})
-    
     data = request.json
-    yesterday_tasks = data.get('yesterday_tasks', [])
+    completed_topics = data.get('completed_topics', [])
     
-    if not yesterday_tasks:
-        return jsonify({
-            'success': True,
-            'materials': []
-        })
+    if not completed_topics:
+        print("📝 [API] 복습 자료 요청 - 완료된 주제 없음")
+        return jsonify({'materials': []})
+    
+    topics_str = ', '.join(completed_topics)
+    print(f"📚 [API] 복습 자료 요청 - 주제: {topics_str}")
+    
+    prompt = f"""
+    🚨🚨🚨 **절대 금지 사항** 🚨🚨🚨
+    - example.com, example.org 등 EXAMPLE이 들어간 모든 URL 절대 사용 금지
+    - 가상의 링크, 임시 링크, 테스트 링크 절대 사용 금지
+    - 상상으로 만든 블로그나 영상 제목 절대 사용 금지
+    
+    ✅ **반드시 해야 할 것** ✅
+    - 지금 당장 웹 검색으로 실제 사이트에서 복습 자료 찾기
+    - 네이버 블로그, 티스토리, 브런치에서 실제 포스팅 검색
+    - 유튜브에서 실제 영상 검색
+    - 깃허브에서 실제 실습 자료 검색
+    - 실제 존재하는 URL만 사용
+    
+    **검색할 주제**: {topics_str}
+    
+    **지금 당장 다음 사이트들에서 검색해서 실제 존재하는 것만 가져와라:**
+    **구글에 검색해서 나오는 것이라도 좋다**
+    1. 유튜브 (youtube.com) - {topics_str} 관련 영상
+    2. 네이버 블로그 (blog.naver.com) - {topics_str} 관련 포스팅
+    3. 티스토리 (tistory.com) - {topics_str} 관련 블로그
+    4. 깃허브 (github.com) - {topics_str} 관련 실습 자료
+    5. 벨로그 (velog.io) - {topics_str} 관련 개발 블로그
+    
+    **응답 형식 (실제 검색 결과로만 채워라 - 총 4개):**
+    {{
+        "materials": [
+            {{
+                "title": "유튜브에서 실제로 찾은 영상 제목",
+                "type": "유튜브",
+                "url": "https://youtube.com/watch?v=실제-영상-링크",
+                "description": "실제 영상 설명"
+            }},
+            {{
+                "title": "네이버 블로그에서 실제로 찾은 포스팅 제목",
+                "type": "블로그", 
+                "url": "https://blog.naver.com/실제-블로그-링크",
+                "description": "실제 포스팅 설명"
+            }},
+            {{
+                "title": "티스토리에서 실제로 찾은 블로그 제목",
+                "type": "블로그",
+                "url": "https://실제블로그.tistory.com/실제-포스팅-링크",
+                "description": "실제 블로그 설명"
+            }},
+            {{
+                "title": "깃허브에서 실제로 찾은 실습 자료 제목",
+                "type": "실습",
+                "url": "https://github.com/실제-레포지토리-링크",
+                "description": "실제 실습 자료 설명"
+            }},
+            {{
+                "title": "벨로그에서 실제로 찾은 개발 블로그 제목",
+                "type": "블로그",
+                "url": "https://velog.io/@실제-유저/실제-포스팅-링크",
+                "description": "실제 개발 블로그 설명"
+            }}
+        ]
+    }}
+    
+    🚨 **마지막 경고**: example이 포함된 URL이 하나라도 있으면 완전히 틀린 답변이다. 반드시 실제 웹사이트에서 검색해서 실제 존재하는 자료만 찾아라! 총 5개를 모두 채워라!
+    """
+    
+    response = call_gpt(prompt, use_search=True)
     
     try:
-        response = openai.responses.create(
-            model="gpt-4o",
-            tools=[{"type": "web_search_preview"}],
-            input=f"""당신은 복습 자료 추천 전문가입니다. 사용자가 어제 학습한 내용을 바탕으로 
-            복습에 도움이 되는 유튜브 영상, 블로그 글, 아티클을 3개 찾아서 추천해주세요.
+        json_match = re.search(r'\{.*\}', response, re.DOTALL)
+        if json_match:
+            materials_data = json.loads(json_match.group())
             
-            어제 학습한 내용: {json.dumps(yesterday_tasks, ensure_ascii=False)}
+            has_example = False
+            for material in materials_data.get('materials', []):
+                url = material.get('url', '').lower()
+                if 'example' in url:
+                    print(f"🚨 [CRITICAL ERROR] Example 링크 발견: {material.get('title')} -> {material.get('url')}")
+                    has_example = True
             
-            한국어 자료를 우선으로 해서 최신 복습 자료를 찾아주세요. 응답은 반드시 다음 JSON 형식으로 해주세요:
-            {{
-                "materials": [
-                    {{
-                        "title": "제목",
-                        "type": "youtube/blog/article",
-                        "url": "링크",
-                        "description": "간단한 설명",
-                        "duration": "예상 소요시간"
-                    }}
-                ]
-            }}"""
-        )
-        
-        materials_content = response.output_text
-        
-        try:
-            # JSON 부분만 추출
-            json_start = materials_content.find('{')
-            json_end = materials_content.rfind('}') + 1
-            if json_start != -1 and json_end != -1:
-                json_str = materials_content[json_start:json_end]
-                materials_data = json.loads(json_str)
-            else:
-                raise ValueError("JSON not found")
-        except:
-            materials_data = {
-                "materials": [
-                    {
-                        "title": "어제 학습 내용 복습하기",
-                        "type": "blog",
-                        "url": "",
-                        "description": "어제 배운 내용을 정리하고 복습해보세요",
-                        "duration": "10분"
-                    },
-                    {
-                        "title": "핵심 개념 정리",
-                        "type": "article",
-                        "url": "",
-                        "description": "중요한 개념들을 다시 한번 점검해보세요",
-                        "duration": "15분"
-                    },
-                    {
-                        "title": "실습 예제 복습",
-                        "type": "youtube",
-                        "url": "",
-                        "description": "실습했던 예제를 다시 따라해보세요",
-                        "duration": "20분"
-                    }
-                ]
-            }
-        
-        return jsonify({
-            'success': True,
-            'materials': materials_data['materials']
-        })
-        
+            if has_example:
+                print("🚨 GPT가 여전히 example 링크를 사용했습니다. 기본 추천으로 대체합니다.")
+                raise ValueError("Example 링크 사용으로 인한 실패")
+            
+            print("✅ 모든 링크가 실제 사이트입니다.")
+            return jsonify(materials_data)
+            
     except Exception as e:
-        return jsonify({'success': False, 'message': f'복습 자료 검색 중 오류가 발생했습니다: {str(e)}'})
-
-@app.route('/api/update-progress', methods=['POST'])
-def update_progress():
-    if 'user_id' not in session:
-        return jsonify({'success': False, 'message': '로그인이 필요합니다.'})
+        print(f"🚨 [GPT Parse Error]: {e}")
+        print(f"🚨 원본 GPT 응답: {response[:500]}...")
     
-    data = request.json
-    plan_id = data.get('plan_id')
-    date = data.get('date')
-    task_index = data.get('task_index')
-    completed = data.get('completed')
-    
-    progress_key = f"{session['user_id']}_{plan_id}_{date}"
-    
-    if progress_key not in daily_progress_db:
-        daily_progress_db[progress_key] = {
-            'completed_tasks': [],
-            'total_tasks': 0,
-            'completion_percentage': 0
-        }
-    
-    progress = daily_progress_db[progress_key]
-    
-    if completed and task_index not in progress['completed_tasks']:
-        progress['completed_tasks'].append(task_index)
-    elif not completed and task_index in progress['completed_tasks']:
-        progress['completed_tasks'].remove(task_index)
-    
-    # 해당 날짜의 총 태스크 수 계산
-    if plan_id in plans_db:
-        plan = plans_db[plan_id]
-        for day_plan in plan['plan_data']['daily_plan']:
-            if day_plan['date'] == date:
-                progress['total_tasks'] = len(day_plan['tasks'])
-                break
-    
-    if progress['total_tasks'] > 0:
-        progress['completion_percentage'] = (len(progress['completed_tasks']) / progress['total_tasks']) * 100
-    
+    print(f"🔄 기본 복습 자료 사용: {topics_str} 관련 검색 링크")
+    search_query = topics_str.replace(' ', '%20').replace(',', '')
     return jsonify({
-        'success': True,
-        'progress': progress
+        'materials': [
+            {
+                "title": f"{topics_str} 학습 영상 검색",
+                "type": "유튜브",
+                "url": f"https://youtube.com/results?search_query={search_query}",
+                "description": "유튜브에서 관련 학습 영상을 검색해보세요."
+            },
+            {
+                "title": f"{topics_str} 블로그 포스팅 검색",
+                "type": "블로그",
+                "url": f"https://search.naver.com/search.naver?where=post&query={search_query}",
+                "description": "네이버에서 관련 블로그 포스팅을 검색해보세요."
+            },
+            {
+                "title": f"{topics_str} 티스토리 검색",
+                "type": "블로그",
+                "url": f"https://www.google.com/search?q=site:tistory.com+{search_query}",
+                "description": "티스토리에서 관련 블로그를 검색해보세요."
+            },
+            {
+                "title": f"{topics_str} 실습 자료 검색",
+                "type": "실습",
+                "url": f"https://github.com/search?q={search_query}",
+                "description": "깃허브에서 관련 실습 자료를 검색해보세요."
+            },
+            {
+                "title": f"{topics_str} 벨로그 검색",
+                "type": "블로그",
+                "url": f"https://velog.io/search?q={search_query}",
+                "description": "벨로그에서 관련 개발 블로그를 검색해보세요."
+            }
+        ]
     })
 
-@app.route('/api/recommend-next-skill', methods=['POST'])
-def recommend_next_skill():
-    if 'user_id' not in session:
-        return jsonify({'success': False, 'message': '로그인이 필요합니다.'})
-    
+@app.route('/api/recommend_next_skills', methods=['POST'])
+def recommend_next_skills():
     data = request.json
-    completed_skill = data.get('completed_skill')
-    user_level = data.get('user_level', 'intermediate')
+    completed_skill = data['completed_skill']
+    
+    prompt = f"""
+    '{completed_skill}' 스킬을 완료한 학습자에게 연관성이 높은 다음 스킬 3가지를 추천해줘.
+    
+    반드시 다음 JSON 형식으로 응답해줘:
+    {{
+        "next_skills": [
+            {{
+                "skill": "스킬명",
+                "reason": "추천 이유",
+                "difficulty": "초급|중급|고급"
+            }}
+        ]
+    }}
+    """
+    
+    response = call_gpt(prompt)
     
     try:
-        response = openai.responses.create(
-            model="gpt-4o",
-            tools=[{"type": "web_search_preview"}],
-            input=f"""당신은 커리어 개발 및 스킬 로드맵 전문가입니다. 
-            사용자가 완료한 스킬을 바탕으로 다음 단계로 학습하면 좋을 스킬 3개를 추천해주세요.
-            
-            완료한 스킬: {completed_skill}
-            현재 수준: {user_level}
-            
-            최신 트렌드를 반영해서 한국 취업 시장에 도움이 되는 스킬들을 추천해주세요. 응답은 반드시 다음 JSON 형식으로 해주세요:
-            {{
-                "recommendations": [
-                    {{
-                        "skill": "스킬명",
-                        "reason": "추천 이유",
-                        "difficulty": "beginner/intermediate/advanced",
-                        "connection": "이전 스킬과의 연관성",
-                        "career_benefit": "커리어에 도움이 되는 점"
-                    }}
-                ]
-            }}"""
-        )
-        
-        recommendations_content = response.output_text
-        
-        try:
-            # JSON 부분만 추출
-            json_start = recommendations_content.find('{')
-            json_end = recommendations_content.rfind('}') + 1
-            if json_start != -1 and json_end != -1:
-                json_str = recommendations_content[json_start:json_end]
-                recommendations_data = json.loads(json_str)
-            else:
-                raise ValueError("JSON not found")
-        except:
-            recommendations_data = {
-                "recommendations": [
-                    {
-                        "skill": f"고급 {completed_skill}",
-                        "reason": "기존 스킬의 심화 학습으로 전문성을 더욱 높일 수 있습니다",
-                        "difficulty": "advanced",
-                        "connection": "직접적인 연관성으로 학습 곡선이 완만합니다",
-                        "career_benefit": "해당 분야의 전문가로 성장할 수 있습니다"
-                    },
-                    {
-                        "skill": f"{completed_skill} 관련 프레임워크",
-                        "reason": "실무 활용도가 높은 관련 도구들을 익힐 수 있습니다",
-                        "difficulty": "intermediate",
-                        "connection": "기존 지식을 바탕으로 확장 학습이 가능합니다",
-                        "career_benefit": "프로젝트 완성도와 개발 속도를 향상시킬 수 있습니다"
-                    },
-                    {
-                        "skill": "프로젝트 관리",
-                        "reason": "기술적 스킬과 함께 관리 역량을 기를 수 있습니다",
-                        "difficulty": "intermediate",
-                        "connection": "모든 기술 분야에서 필요한 공통 역량입니다",
-                        "career_benefit": "리더십과 협업 능력을 기를 수 있어 승진에 도움됩니다"
-                    }
-                ]
+        json_match = re.search(r'\{.*\}', response, re.DOTALL)
+        if json_match:
+            skills = json.loads(json_match.group())
+            return jsonify(skills)
+    except:
+        pass
+    
+    return jsonify({
+        'next_skills': [
+            {
+                'skill': '관련 스킬',
+                'reason': '연관성이 높습니다',
+                'difficulty': '중급'
             }
-        
-        return jsonify({
-            'success': True,
-            'recommendations': recommendations_data['recommendations']
-        })
-        
-    except Exception as e:
-        return jsonify({'success': False, 'message': f'추천 중 오류가 발생했습니다: {str(e)}'})
+        ]
+    })
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(debug=True)
