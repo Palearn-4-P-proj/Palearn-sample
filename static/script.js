@@ -17,8 +17,11 @@ document.addEventListener('DOMContentLoaded', function() {
     initDevControls();
 });
 
-async function apiCall(endpoint, data = null, method = 'GET') {
-    showLoading();
+async function apiCall(endpoint, data = null, method = 'GET', showLoadingScreen = true) {
+    if (showLoadingScreen) {
+        showLoading();
+    }
+    
     try {
         const options = {
             method: method,
@@ -39,10 +42,14 @@ async function apiCall(endpoint, data = null, method = 'GET') {
         
     } catch (error) {
         console.error(`API Error [${endpoint}]:`, error);
-        alert('서버와의 통신 중 오류가 발생했습니다.');
+        if (showLoadingScreen) {
+            alert('서버와의 통신 중 오류가 발생했습니다.');
+        }
         return null;
     } finally {
-        hideLoading();
+        if (showLoadingScreen) {
+            hideLoading();
+        }
     }
 }
 
@@ -229,7 +236,7 @@ function deletePlan(planIndex) {
 function showCreatePlan() {
     showSection('createPlanSection');
     
-    const today = new Date().toISOString().split('T')[0];
+    const today = getCurrentDate();
     document.getElementById('startDate').value = today;
 }
 
@@ -390,17 +397,42 @@ function displayRecommendations(recommendations) {
         courseItem.className = 'course-item';
         courseItem.onclick = () => selectCourse(course, courseItem);
         
+        // curriculum 또는 chapters 필드 처리 (호환성)
+        let curriculumData = course.curriculum || course.chapters || [];
+        if (!Array.isArray(curriculumData)) {
+            curriculumData = [];
+        }
+        
+        // 표시용 텍스트
+        let chaptersDisplay;
+        if (curriculumData.length > 0) {
+            chaptersDisplay = `${curriculumData.length}개 강의`;
+        } else if (course.chapters && !Array.isArray(course.chapters)) {
+            chaptersDisplay = `${course.chapters}챕터`;
+        } else {
+            chaptersDisplay = '강의 정보 확인';
+        }
+        
         courseItem.innerHTML = `
             <img src="${course.image_url}" alt="${course.title}" onerror="this.src='https://via.placeholder.com/300x200'">
             <h4>${course.title}</h4>
             <div class="course-meta">
                 <span>${course.type}</span>
                 <span>${course.platform || '온라인'}</span>
-                <span>${course.chapters}챕터</span>
+                <span>${chaptersDisplay}</span>
                 <span>${course.duration}</span>
                 <span>${course.price || '가격 미정'}</span>
             </div>
             <p class="course-summary">${course.summary}</p>
+            ${curriculumData.length > 0 ? `
+                <div class="course-chapters">
+                    <h5>📚 강의 목차:</h5>
+                    <ul class="chapters-list">
+                        ${curriculumData.slice(0, 5).map(item => `<li>${item}</li>`).join('')}
+                        ${curriculumData.length > 5 ? `<li class="more-chapters">...외 ${curriculumData.length - 5}개 더</li>` : ''}
+                    </ul>
+                </div>
+            ` : ''}
             <a href="${course.link}" target="_blank" class="course-link">자세히 보기</a>
         `;
         
@@ -501,7 +533,7 @@ function createCalendarDay(date) {
     const dayDiv = document.createElement('div');
     dayDiv.className = 'calendar-day';
     
-    const dateStr = date.toISOString().split('T')[0];
+    const dateStr = formatDateToString(date);
     const isCurrentMonth = date.getMonth() === currentMonth.getMonth();
     const isToday = dateStr === getCurrentDate();
     
@@ -628,22 +660,44 @@ async function updateTaskStatus(dateStr, taskIndex, completed) {
         return;
     }
     
-    const result = await apiCall('/update_task', {
-        date: dateStr,
-        task_index: taskIndex,
-        completed: completed
-    }, 'POST');
+    // 로컬 데이터 먼저 업데이트 (즉시 반응)
+    const dayData = currentPlan.daily_schedule.find(day => day.date === dateStr);
+    if (dayData && dayData.tasks[taskIndex]) {
+        dayData.tasks[taskIndex].completed = completed;
+    }
     
-    if (result && result.success) {
-        const dayData = currentPlan.daily_schedule.find(day => day.date === dateStr);
-        if (dayData && dayData.tasks[taskIndex]) {
-            dayData.tasks[taskIndex].completed = completed;
-        }
+    // UI 즉시 업데이트
+    renderCalendar();
+    loadTodayTasks();
+    
+    // 서버에 비동기로 저장 (백그라운드, 로딩 화면 없음)
+    try {
+        const result = await apiCall('/update_task', {
+            date: dateStr,
+            task_index: taskIndex,
+            completed: completed
+        }, 'POST', false); // 로딩 화면 비활성화
         
-        renderCalendar();
-        loadTodayTasks();
-        loadReviewMaterials();
-        checkPlanCompletion();
+        if (result && result.success) {
+            console.log('✅ 태스크 업데이트 완료');
+            checkPlanCompletion();
+        } else {
+            console.error('❌ 태스크 업데이트 실패');
+            // 실패 시 원상복구
+            if (dayData && dayData.tasks[taskIndex]) {
+                dayData.tasks[taskIndex].completed = !completed;
+                renderCalendar();
+                loadTodayTasks();
+            }
+        }
+    } catch (error) {
+        console.error('❌ 태스크 업데이트 에러:', error);
+        // 에러 시 원상복구
+        if (dayData && dayData.tasks[taskIndex]) {
+            dayData.tasks[taskIndex].completed = !completed;
+            renderCalendar();
+            loadTodayTasks();
+        }
     }
 }
 
@@ -736,9 +790,16 @@ function loadTodayTasks() {
 }
 
 async function loadReviewMaterials() {
+    // 현재 계획이 없으면 복습 자료도 없음
+    if (!currentPlan || !currentPlan.daily_schedule) {
+        const reviewSection = document.getElementById('reviewMaterials');
+        reviewSection.style.display = 'none';
+        return;
+    }
+    
     const yesterday = new Date(devCurrentDate);
     yesterday.setDate(yesterday.getDate() - 1);
-    const yesterdayStr = yesterday.toISOString().split('T')[0];
+    const yesterdayStr = formatDateToString(yesterday);
     
     console.log(`📚 복습 자료 로드 시도 - 어제: ${yesterdayStr}`);
     
@@ -759,18 +820,25 @@ async function loadReviewMaterials() {
     
     console.log(`📚 어제 완료한 항목: ${completedTopics.join(', ')}`);
     
-    const result = await apiCall('/get_review_materials', {
-        completed_topics: completedTopics
-    }, 'POST');
-    
-    if (result && result.materials && result.materials.length > 0) {
-        displayReviewMaterials(result.materials);
+    // GPT API 호출 (여기서만 호출됨)
+    try {
+        const result = await apiCall('/get_review_materials', {
+            completed_topics: completedTopics
+        }, 'POST');
+        
+        if (result && result.materials && result.materials.length > 0) {
+            displayReviewMaterials(result.materials);
+            reviewSection.style.display = 'block';
+            console.log(`📚 복습 자료 ${result.materials.length}개 로드 완료`);
+        } else {
+            reviewSection.style.display = 'block';
+            reviewList.innerHTML = '<p>복습 자료를 불러오는 중 문제가 발생했습니다. 잠시 후 다시 시도해보세요.</p>';
+            console.log('📚 복습 자료 API 실패');
+        }
+    } catch (error) {
+        console.error('📚 복습 자료 로드 에러:', error);
         reviewSection.style.display = 'block';
-        console.log(`📚 복습 자료 ${result.materials.length}개 로드 완료`);
-    } else {
-        reviewSection.style.display = 'block';
-        reviewList.innerHTML = '<p>복습 자료를 불러오는 중 문제가 발생했습니다. 잠시 후 다시 시도해보세요.</p>';
-        console.log('📚 복습 자료 API 실패');
+        reviewList.innerHTML = '<p>복습 자료를 불러오는 중 오류가 발생했습니다.</p>';
     }
 }
 
@@ -804,7 +872,7 @@ function updateTodayDate() {
 
 function initDevControls() {
     const devDateInput = document.getElementById('devCurrentDate');
-    devDateInput.value = devCurrentDate.toISOString().split('T')[0];
+    devDateInput.value = getCurrentDate();
 }
 
 function prepareDateChange() {
@@ -812,7 +880,7 @@ function prepareDateChange() {
     const newDateStr = devDateInput.value;
     
     if (newDateStr) {
-        pendingDateChange = new Date(newDateStr);
+        pendingDateChange = new Date(newDateStr + 'T12:00:00'); // 정오로 설정하여 시간대 문제 방지
         document.getElementById('confirmDateBtn').disabled = false;
         console.log('날짜 변경 대기 중:', newDateStr);
     }
@@ -821,15 +889,17 @@ function prepareDateChange() {
 function confirmDateChange() {
     if (!pendingDateChange) return;
     
-    const oldDate = devCurrentDate.toISOString().split('T')[0];
+    const oldDate = getCurrentDate();
     devCurrentDate = new Date(pendingDateChange);
-    const newDate = devCurrentDate.toISOString().split('T')[0];
+    const newDate = getCurrentDate();
     
     alert(`날짜가 변경되었습니다: ${newDate}`);
     
     updateTodayDate();
     renderCalendar();
     loadTodayTasks();
+    
+    // 날짜가 바뀌었을 때만 복습 자료 새로 로드
     loadReviewMaterials();
     
     document.getElementById('confirmDateBtn').disabled = true;
@@ -839,9 +909,9 @@ function confirmDateChange() {
 }
 
 function resetToToday() {
-    const oldDate = devCurrentDate.toISOString().split('T')[0];
+    const oldDate = getCurrentDate();
     devCurrentDate = new Date();
-    const newDate = devCurrentDate.toISOString().split('T')[0];
+    const newDate = getCurrentDate();
     
     document.getElementById('devCurrentDate').value = newDate;
     document.getElementById('confirmDateBtn').disabled = true;
@@ -852,13 +922,23 @@ function resetToToday() {
     updateTodayDate();
     renderCalendar();
     loadTodayTasks();
+    
+    // 날짜가 바뀌었을 때만 복습 자료 새로 로드
     loadReviewMaterials();
     
     console.log(`날짜 리셋: ${oldDate} → ${newDate}`);
 }
 
+// 날짜 관련 유틸리티 함수들 - 시간대 문제 해결
 function getCurrentDate() {
-    return devCurrentDate.toISOString().split('T')[0];
+    return formatDateToString(devCurrentDate);
+}
+
+function formatDateToString(date) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
 }
 
 function editDayTasks() {
